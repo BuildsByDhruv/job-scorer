@@ -1,0 +1,36 @@
+# EdgeDash user profile — edit this file, never commit secrets here.
+# All fields are optional; sensible defaults are applied for missing ones.
+
+# The job title you are targeting.
+target_role: "Data Analyst"
+
+# City used to filter job listings.
+target_city: "Bengaluru"
+
+# Keywords that boost relevance when scoring a listing.
+keywords:
+  - "SQL"
+  - "Python"
+  - "Power BI"
+  - "Tableau"
+  - "ETL"
+  - "data pipeline"
+
+# Your current skill set (used for gap analysis).
+my_skills:
+  - "Python"
+  - "SQL"
+  - "pandas"
+  - "Excel"
+  - "data visualization"
+  - "statistical analysis"
+
+# Years of relevant experience (used in fit scoring).
+experience_years: 3
+
+# Path to the SQLite database file (relative to repo root).
+# In week 4 this becomes a Postgres connection string; change it here only.
+db_path: "edgedash.db"
+
+# Listings with a fit score below this threshold are hidden from the dashboard.
+min_fit_score: 50
