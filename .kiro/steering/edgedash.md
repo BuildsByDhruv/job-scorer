@@ -50,6 +50,22 @@ Trigger (scheduled)
 
 ---
 
+## Network & Sources
+
+9. **Every external source lives behind a `Source` class with a uniform interface.** The Fetcher never contains source-specific parsing logic. Adding a new source must never require editing the Fetcher.
+
+10. **Every `Source` returns a list of normalised dicts with exactly these keys:** `source`, `external_id`, `title`, `company`, `location`, `url`, `description`, `posted_at`, `raw`. Missing values are `None` — never an empty string, never `"N/A"`.
+
+11. **All network calls go through one shared helper** that enforces a 10-second timeout, 2 retry attempts with exponential backoff, and a `User-Agent` header. No bare `requests.get` anywhere else in the codebase.
+
+12. **A source failing must never kill the cycle.** Catch exceptions per-source, log the failure to `cycle_log` with `status="failed"`, and continue to the next source. One dead job board must not stop the others.
+
+13. **Secrets come from environment variables loaded via a `.env` file that is gitignored.** Never a literal key in code, never a key in `config.yaml`. If a required key is missing, that source skips itself with a clear log line — it does not crash the cycle.
+
+14. **Respect the source.** Rate-limit to at most 1 request per second per source, set a real `User-Agent`, and honour any documented page limits.
+
+---
+
 ## Style
 
 - Small, testable functions over large monolithic ones.

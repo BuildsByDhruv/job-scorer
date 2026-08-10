@@ -196,3 +196,74 @@ def get_listings(
         rows = conn.execute(query, params).fetchall()
 
     return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic queries (read-only)
+# ---------------------------------------------------------------------------
+
+
+def count_total(path: str) -> int:
+    """Return the total number of listings."""
+    with _connect(path) as conn:
+        return conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
+
+
+def count_by_source(path: str) -> list[dict[str, Any]]:
+    """Return [{"source": str, "count": int}, ...] ordered by count desc."""
+    with _connect(path) as conn:
+        rows = conn.execute(
+            "SELECT source, COUNT(*) AS count FROM listings "
+            "GROUP BY source ORDER BY count DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def cross_source_duplicates(path: str) -> list[dict[str, Any]]:
+    """Return listings where (title, company) appears in more than one source.
+
+    Each returned row has: title, company, sources (comma-separated), count.
+    """
+    with _connect(path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                title,
+                company,
+                COUNT(DISTINCT source) AS source_count,
+                GROUP_CONCAT(DISTINCT source) AS sources
+            FROM listings
+            GROUP BY LOWER(title), LOWER(company)
+            HAVING COUNT(DISTINCT source) > 1
+            ORDER BY source_count DESC, title
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def recent_listings(path: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Return the most recently fetched listings."""
+    with _connect(path) as conn:
+        rows = conn.execute(
+            "SELECT source, title, company, fetched_at FROM listings "
+            "ORDER BY fetched_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def quality_issues(path: str) -> list[dict[str, Any]]:
+    """Return listings with a NULL or empty url, title, or company."""
+    with _connect(path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, source, title, company, url, fetched_at
+            FROM listings
+            WHERE
+                url     IS NULL OR TRIM(url)     = ''
+             OR title   IS NULL OR TRIM(title)   = ''
+             OR company IS NULL OR TRIM(company) = ''
+            ORDER BY fetched_at DESC
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]

@@ -13,7 +13,8 @@ build/
 
 # Environment / secrets
 .env
-.env.*
+.env.local
+.env.*.local
 
 # Editor
 .vscode/

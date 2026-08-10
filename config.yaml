@@ -2,13 +2,14 @@
 # All fields are optional; sensible defaults are applied for missing ones.
 
 # The job title you are targeting.
-target_role: "Data Analyst"
+target_role: "Security Engineer"
 
 # City used to filter job listings.
-target_city: "Bengaluru"
+target_city: "Berlin"
 
 # Keywords that boost relevance when scoring a listing.
 keywords:
+  - "Security"
   - "SQL"
   - "Python"
   - "Power BI"
@@ -18,6 +19,7 @@ keywords:
 
 # Your current skill set (used for gap analysis).
 my_skills:
+  - "Security"
   - "Python"
   - "SQL"
   - "pandas"
@@ -34,3 +36,13 @@ db_path: "edgedash.db"
 
 # Listings with a fit score below this threshold are hidden from the dashboard.
 min_fit_score: 50
+
+# Job board sources to query each cycle.
+# Available: "arbeitnow" (no key needed), "apify" (needs APIFY_TOKEN in .env)
+sources:
+  - "arbeitnow"
+  # - "apify"   # uncomment after adding APIFY_TOKEN to .env
+
+# Set to true to use the hardcoded mock fetcher instead of live sources.
+# Useful for offline development and testing.
+use_mock_fetcher: false

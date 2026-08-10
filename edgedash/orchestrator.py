@@ -14,11 +14,8 @@ from edgedash.agents.base import Agent, AgentResult
 from edgedash.config import Config
 
 # ---------------------------------------------------------------------------
-# Agent registry
+# Placeholder agent
 # ---------------------------------------------------------------------------
-# To swap in a real agent, replace the import and the entry here — one line.
-
-from edgedash.agents.mock_fetcher import MockFetcher
 
 
 class _PlaceholderAgent:
@@ -38,13 +35,23 @@ class _PlaceholderAgent:
         )
 
 
-# Ordered list of agents the orchestrator will consider each cycle.
-# Replace _PlaceholderAgent(...) with the real class when it's ready.
-_AGENT_REGISTRY: list[Agent] = [
-    MockFetcher(),
-    _PlaceholderAgent("scorer"),
-    _PlaceholderAgent("gap_analyzer"),
-]
+# ---------------------------------------------------------------------------
+# Agent registry
+# ---------------------------------------------------------------------------
+# To swap back to the mock fetcher, set use_mock_fetcher: true in config.yaml.
+# To add a new real agent, import it and replace the matching placeholder below.
+
+from edgedash.agents.fetcher import Fetcher
+from edgedash.agents.mock_fetcher import MockFetcher
+
+
+def _build_registry(config: Config) -> list[Agent]:
+    fetcher: Agent = MockFetcher() if config.use_mock_fetcher else Fetcher()
+    return [
+        fetcher,
+        _PlaceholderAgent("scorer"),
+        _PlaceholderAgent("gap_analyzer"),
+    ]
 
 # ---------------------------------------------------------------------------
 # Console helpers
@@ -118,11 +125,15 @@ def run_cycle(config: Config) -> None:
     _print_dim(f"  last fetch    : {last_fetch or 'never'}")
     _print_dim(f"  unscored rows : {unscored}")
     _print_dim(f"  target role   : {config.target_role}  |  city: {config.target_city}")
+    _print_dim(f"  fetcher mode  : {'mock' if config.use_mock_fetcher else 'live'}"
+               f"  |  sources: {', '.join(config.sources)}")
+
+    agent_registry = _build_registry(config)
 
     # ── 3. Plan ─────────────────────────────────────────────────────────────
     _print_header("Plan")
     decisions: list[tuple[Agent, str]] = []
-    for agent in _AGENT_REGISTRY:
+    for agent in agent_registry:
         reason = _decide(agent, last_fetch, unscored)
         decisions.append((agent, reason))
         flag = "▶ RUN " if not reason.startswith("SKIP") else "○ SKIP"
