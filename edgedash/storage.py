@@ -56,6 +56,20 @@ CREATE TABLE IF NOT EXISTS extraction_cache (
     years_required   TEXT,
     remote_ok        TEXT
 );
+
+CREATE TABLE IF NOT EXISTS skill_gap_snapshots (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id            TEXT    NOT NULL,
+    computed_at       TEXT    NOT NULL,
+    skill             TEXT    NOT NULL,
+    listings_blocked  INTEGER NOT NULL,
+    opportunity_cost  REAL    NOT NULL,
+    mean_score        REAL    NOT NULL,
+    top_score         INTEGER NOT NULL,
+    also_nice_to_have INTEGER NOT NULL DEFAULT 0,
+    low_confidence    INTEGER NOT NULL DEFAULT 0,
+    example_ids       TEXT    NOT NULL DEFAULT '[]'
+);
 """
 
 # Migration applied on every init_db call — safe on existing databases.
@@ -73,6 +87,22 @@ _MIGRATIONS = [
         seniority        TEXT NOT NULL DEFAULT 'unknown',
         years_required   TEXT,
         remote_ok        TEXT
+    )
+    """,
+    # Add skill_gap_snapshots for append-only gap history (rule 25).
+    """
+    CREATE TABLE IF NOT EXISTS skill_gap_snapshots (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id            TEXT    NOT NULL,
+        computed_at       TEXT    NOT NULL,
+        skill             TEXT    NOT NULL,
+        listings_blocked  INTEGER NOT NULL,
+        opportunity_cost  REAL    NOT NULL,
+        mean_score        REAL    NOT NULL,
+        top_score         INTEGER NOT NULL,
+        also_nice_to_have INTEGER NOT NULL DEFAULT 0,
+        low_confidence    INTEGER NOT NULL DEFAULT 0,
+        example_ids       TEXT    NOT NULL DEFAULT '[]'
     )
     """,
 ]
@@ -430,4 +460,232 @@ def quality_issues(path: str) -> list[dict[str, Any]]:
             ORDER BY fetched_at DESC
             """
         ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Gap snapshot storage (rule 25 — append-only, never overwrite)
+# ---------------------------------------------------------------------------
+
+
+def write_gap_snapshot(
+    path: str,
+    run_id: str,
+    computed_at: str,
+    rows: list[dict[str, Any]],
+) -> int:
+    """Append one snapshot row per gap skill for this run.
+
+    Each dict in *rows* must contain:
+        skill, listings_blocked, opportunity_cost, mean_score,
+        top_score, also_nice_to_have, low_confidence, example_ids (list[str])
+
+    Returns the number of rows written.
+    Previous runs are never touched — this is append-only.
+    """
+    import json as _json
+
+    if not rows:
+        return 0
+
+    with _connect(path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO skill_gap_snapshots
+                (run_id, computed_at, skill, listings_blocked,
+                 opportunity_cost, mean_score, top_score,
+                 also_nice_to_have, low_confidence, example_ids)
+            VALUES
+                (:run_id, :computed_at, :skill, :listings_blocked,
+                 :opportunity_cost, :mean_score, :top_score,
+                 :also_nice_to_have, :low_confidence, :example_ids)
+            """,
+            [
+                {
+                    "run_id":            run_id,
+                    "computed_at":       computed_at,
+                    "skill":             r["skill"],
+                    "listings_blocked":  r["listings_blocked"],
+                    "opportunity_cost":  r["opportunity_cost"],
+                    "mean_score":        r["mean_score"],
+                    "top_score":         r["top_score"],
+                    "also_nice_to_have": r["also_nice_to_have"],
+                    "low_confidence":    1 if r["low_confidence"] else 0,
+                    "example_ids":       _json.dumps(r["example_ids"]),
+                }
+                for r in rows
+            ],
+        )
+
+    return len(rows)
+
+
+def get_latest_gap_snapshot(path: str) -> list[dict[str, Any]]:
+    """Return every row from the most recent gap snapshot run.
+
+    Rows are ordered by opportunity_cost descending (highest-value gap first).
+    Returns an empty list when no snapshot has been written yet.
+    """
+    import json as _json
+
+    with _connect(path) as conn:
+        # Find the run_id with the most recent computed_at.
+        latest = conn.execute(
+            "SELECT run_id FROM skill_gap_snapshots "
+            "ORDER BY computed_at DESC LIMIT 1"
+        ).fetchone()
+
+        if latest is None:
+            return []
+
+        run_id = latest["run_id"]
+
+        rows = conn.execute(
+            """
+            SELECT skill, listings_blocked, opportunity_cost,
+                   mean_score, top_score, also_nice_to_have,
+                   low_confidence, example_ids, computed_at
+            FROM skill_gap_snapshots
+            WHERE run_id = ?
+            ORDER BY opportunity_cost DESC
+            """,
+            (run_id,),
+        ).fetchall()
+
+    return [
+        {
+            **dict(r),
+            "example_ids":   _json.loads(r["example_ids"]),
+            "low_confidence": bool(r["low_confidence"]),
+        }
+        for r in rows
+    ]
+
+
+def get_scored_listings_with_cache(path: str) -> list[dict[str, Any]]:
+    """Return every scored listing joined with its extraction cache row.
+
+    Only listings with a non-NULL fit_score are returned.
+    Listings with no matching cache row are excluded — they have no facts.
+    """
+    import json as _json
+    import hashlib as _hashlib
+
+    with _connect(path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                l.id,
+                l.fit_score,
+                e.required_skills,
+                e.nice_to_have
+            FROM listings l
+            JOIN extraction_cache e
+                ON e.description_hash = lower(hex(sha256(l.description)))
+            WHERE l.fit_score IS NOT NULL
+              AND l.description IS NOT NULL
+            """
+        ).fetchall()
+
+    # SQLite doesn't have sha256() before version 3.44.  Fall back to a
+    # Python-side join on a pre-computed hash so we stay compatible.
+    if not rows:
+        rows = _scored_listings_python_join(path, _json, _hashlib)
+
+    return [
+        {
+            "id":               r["id"],
+            "fit_score":        r["fit_score"],
+            "required_skills":  _json.loads(r["required_skills"] or "[]"),
+            "nice_to_have":     _json.loads(r["nice_to_have"] or "[]"),
+        }
+        for r in rows
+    ]
+
+
+def _scored_listings_python_join(
+    path: str,
+    _json: Any,
+    _hashlib: Any,
+) -> list[Any]:
+    """Python-side join for SQLite builds that lack sha256()."""
+    with _connect(path) as conn:
+        listings = conn.execute(
+            "SELECT id, fit_score, description FROM listings "
+            "WHERE fit_score IS NOT NULL AND description IS NOT NULL"
+        ).fetchall()
+
+        cache_rows = conn.execute(
+            "SELECT description_hash, required_skills, nice_to_have "
+            "FROM extraction_cache"
+        ).fetchall()
+
+    cache = {r["description_hash"]: r for r in cache_rows}
+
+    result = []
+    for listing in listings:
+        desc = listing["description"] or ""
+        h = _hashlib.sha256(desc.encode()).hexdigest()
+        if h in cache:
+            c = cache[h]
+
+            class _Row:
+                def __init__(self, data: dict[str, Any]) -> None:
+                    self._d = data
+
+                def __getitem__(self, k: str) -> Any:
+                    return self._d[k]
+
+            result.append(_Row({
+                "id":              listing["id"],
+                "fit_score":       listing["fit_score"],
+                "required_skills": c["required_skills"],
+                "nice_to_have":    c["nice_to_have"],
+            }))
+
+    return result
+
+
+def get_gap_snapshot_by_run(path: str, run_id: str) -> list[dict[str, Any]]:
+    """Return all rows for a single run_id, ordered by opportunity_cost desc."""
+    import json as _json
+
+    with _connect(path) as conn:
+        rows = conn.execute(
+            """
+            SELECT skill, listings_blocked, opportunity_cost,
+                   mean_score, top_score, also_nice_to_have,
+                   low_confidence, example_ids, computed_at
+            FROM skill_gap_snapshots
+            WHERE run_id = ?
+            ORDER BY opportunity_cost DESC
+            """,
+            (run_id,),
+        ).fetchall()
+
+    return [
+        {
+            **dict(r),
+            "example_ids":    _json.loads(r["example_ids"]),
+            "low_confidence": bool(r["low_confidence"]),
+        }
+        for r in rows
+    ]
+
+
+def get_snapshot_run_ids(path: str) -> list[dict[str, Any]]:
+    """Return all distinct run_ids ordered by computed_at ascending.
+
+    Each entry has: run_id, computed_at (the earliest timestamp in that run).
+    """
+    with _connect(path) as conn:
+        rows = conn.execute(
+            """
+            SELECT run_id, MIN(computed_at) AS computed_at
+            FROM skill_gap_snapshots
+            GROUP BY run_id
+            ORDER BY computed_at ASC
+            """
+        ).fetchall()
+
     return [dict(r) for r in rows]

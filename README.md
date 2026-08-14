@@ -35,8 +35,8 @@ Orchestrator
 ## Current status
 
 ### Built
-- [x] `edgedash/config.py` — `Config` dataclass loaded from `config.yaml`
-- [x] `edgedash/storage.py` — SQLite backend behind a thin interface
+- [x] `edgedash/config.py` — `Config` dataclass loaded from `config.yaml`; includes `skill_aliases` map
+- [x] `edgedash/storage.py` — SQLite backend behind a thin interface; `skill_gap_snapshots` table is append-only
 - [x] `edgedash/agents/base.py` — `Agent` protocol and `AgentResult` dataclass
 - [x] `edgedash/agents/mock_fetcher.py` — offline mock; swap back in via `use_mock_fetcher: true` in `config.yaml`
 - [x] `edgedash/agents/fetcher.py` — real Fetcher; queries all enabled sources, logs each per-source outcome
@@ -48,14 +48,17 @@ Orchestrator
 - [x] `edgedash/scoring.py` — deterministic scorer; four weighted components; no model calls
 - [x] `edgedash/agents/extractor.py` — LLM-backed fact extraction with description-hash cache
 - [x] `edgedash/agents/scorer.py` — Scorer agent; per-listing error isolation; distribution logging
+- [x] `edgedash/agents/gap_analyzer.py` — GapAnalyzer agent; deterministic; ranks gaps by opportunity cost
+- [x] `edgedash/skills.py` — `canonical()` normalisation + alias map; `--audit` CLI for raw skill inspection
+- [x] `edgedash/gaps.py` — morning gap report; `--trend` compares earliest vs latest snapshot
 - [x] `edgedash/orchestrator.py` — reads state, plans, runs registered agents, logs every run to `cycle_log`
 - [x] `edgedash/diagnose.py` — read-only diagnostic: counts, cross-source duplicates, recent listings, quality issues
 - [x] `edgedash/rescore.py` — manual re-scoring escape hatch; never clears the extraction cache
 - [x] `run_cycle.py` — single entry point
 - [x] `tests/test_scoring.py` — 25 unit tests for the deterministic scorer
+- [x] `tests/test_skills.py` — 26 unit tests for `canonical()`
 
-### Week 3
-- [ ] `GapAnalyzer` agent
+### Remaining
 - [ ] `Verifier` agent
 - [ ] Streamlit dashboard (read-only)
 
@@ -80,8 +83,9 @@ cp .env.example .env
 # edit .env and set APIFY_TOKEN and GEMINI_API_KEY
 ```
 
-Edit `config.yaml` to set your target role, city, skills, seniority, and enabled
-sources. Every user-specific value lives there — nothing is hardcoded.
+Edit `config.yaml` to set your target role, city, skills, seniority, enabled
+sources, and the `skill_aliases` map. Every user-specific value lives there —
+nothing is hardcoded.
 
 ```bash
 python run_cycle.py
@@ -93,7 +97,10 @@ python run_cycle.py
 
 | Command | What it does |
 |---|---|
-| `python run_cycle.py` | Run a full fetch + score cycle |
+| `python run_cycle.py` | Run a full fetch + score + gap-analysis cycle |
+| `python -m edgedash.gaps` | Print the latest gap snapshot as a ranked table |
+| `python -m edgedash.gaps --trend` | Show how the top 10 gaps have moved since the first snapshot |
+| `python -m edgedash.skills --audit` | Inspect raw skill strings in the DB; find aliases to add |
 | `python -m edgedash.diagnose` | Read-only DB diagnostic (counts, gaps, quality) |
 | `python -m edgedash.agents.scorer --limit 5` | Score up to 5 listings manually |
 | `python -m edgedash.rescore --id <id>` | Clear one listing's score for re-scoring |
@@ -149,6 +156,40 @@ touching the extraction cache, so the next cycle re-scores using cached facts.
 
 ---
 
+## Gap analysis
+
+After every scoring run, `GapAnalyzer` compares the required skills from each
+scored listing against your `my_skills` list in `config.yaml`. All comparisons go
+through `canonical()`, so `"K8s"`, `"k8s"`, and `"kubernetes"` are treated as the
+same skill.
+
+Each gap is ranked by **opportunity cost** — the sum of `fit_score / 100` for
+every listing blocked by that gap. A gap in a listing scored 85 outweighs a gap
+in a listing scored 20, even if raw frequency is the same.
+
+Every run writes a timestamped snapshot to `skill_gap_snapshots`. Previous
+snapshots are never overwritten, so trend data accumulates automatically. After
+two or more daily runs, `python -m edgedash.gaps --trend` shows the real movement
+between your earliest and latest snapshot.
+
+---
+
+## Skill canonicalisation
+
+Skill names from job listings are normalised before any comparison:
+1. Lowercase and strip whitespace
+2. Drop parenthetical qualifiers — `"kubernetes (eks)"` → `"kubernetes"`
+3. Strip surrounding punctuation
+4. Collapse internal whitespace
+5. Apply the alias map from `config.yaml`
+
+The alias map (`skill_aliases`) is yours to maintain. The system never merges
+skill names automatically. Run `python -m edgedash.skills --audit` after a few
+cycles to see the 40 most common raw strings and a list of singletons (typos and
+junk), then add any new aliases you spot.
+
+---
+
 ## LLM configuration
 
 ```yaml
@@ -200,6 +241,18 @@ and cheap to recompute when you tune the weights.
 The same job description, re-fetched from a different source or on a later run,
 hits the cache and costs zero API calls. Re-scoring after changing your skills or
 weights is free.
+
+**Gap history is append-only.**
+`skill_gap_snapshots` uses `INSERT` only — no `UPDATE`, no `DELETE`. Each run
+gets a UUID `run_id`. The trend view reads the earliest and latest run by
+`computed_at` and shows the real delta. There is no way to accidentally overwrite
+history, and retrofitting trend data after the fact is impossible — which is why
+the table was designed this way from the start.
+
+**Skill names are canonicalised by your rules, not the model's.**
+The alias map in `config.yaml` is the single source of truth for what two skill
+names mean the same thing. The model never merges names. You add aliases when you
+see collisions in the `--audit` output.
 
 **Secrets load in one place.**
 `run_cycle.py` calls `load_dotenv()` before any other import. No other file reads

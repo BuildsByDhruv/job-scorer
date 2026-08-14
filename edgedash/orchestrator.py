@@ -42,6 +42,7 @@ class _PlaceholderAgent:
 # To add a new real agent, import it and replace the matching placeholder below.
 
 from edgedash.agents.fetcher import Fetcher
+from edgedash.agents.gap_analyzer import GapAnalyzer
 from edgedash.agents.mock_fetcher import MockFetcher
 from edgedash.agents.scorer import Scorer
 
@@ -51,7 +52,7 @@ def _build_registry(config: Config) -> list[Agent]:
     return [
         fetcher,
         Scorer(),
-        _PlaceholderAgent("gap_analyzer"),
+        GapAnalyzer(),
     ]
 
 # ---------------------------------------------------------------------------
@@ -207,6 +208,6 @@ def _decide(agent: Agent, last_fetch: str | None, unscored: int) -> str:
             return "SKIP — no unscored listings"
         return f"RUN — {unscored} listings waiting to be scored"
     if agent.name == "gap_analyzer":
-        return "SKIP — runs after scorer produces results"
+        return "RUN — always runs after scorer"
     # Unknown future agents: run by default.
     return "RUN — default policy"

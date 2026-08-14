@@ -36,6 +36,7 @@ _DEFAULTS: dict[str, Any] = {
     "w_seniority_fit": 0.25,
     "w_location_fit": 0.15,
     "w_recency": 0.15,
+    "skill_aliases": {},
 }
 
 # ---------------------------------------------------------------------------
@@ -62,6 +63,7 @@ class Config:
     w_seniority_fit: float
     w_location_fit: float
     w_recency: float
+    skill_aliases: dict[str, str]
 
 
 # ---------------------------------------------------------------------------
@@ -118,4 +120,8 @@ def load_config(config_path: Path | None = None) -> Config:
         w_seniority_fit=float(merged["w_seniority_fit"]),
         w_location_fit=float(merged["w_location_fit"]),
         w_recency=float(merged["w_recency"]),
+        skill_aliases={
+            str(k): str(v)
+            for k, v in (merged.get("skill_aliases") or {}).items()
+        },
     )

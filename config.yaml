@@ -56,6 +56,58 @@ llm_model: "gemini-2.5-flash"
 # Maximum listings scored per cycle (rule 21 — cost/rate-limit guard).
 llm_batch_size: 25
 
+# ---------------------------------------------------------------------------
+# Skill alias map — THIS IS YOURS TO EDIT.
+# When you see two raw strings that mean the same skill, add an entry here.
+# Format: "raw normalised form": "canonical name"
+# The key is what canonical() produces BEFORE the alias lookup (already
+# lowercased, whitespace-collapsed, parentheticals stripped).
+# Adding entries here is expected as you inspect your own --audit output.
+# ---------------------------------------------------------------------------
+skill_aliases:
+  # Kubernetes variants
+  "k8s": "kubernetes"
+
+  # Node / JavaScript — deliberately kept separate (different skills)
+  "nodejs": "node"
+  "node.js": "node"
+
+  # Postgres variants
+  "postgresql": "postgres"
+  "psql": "postgres"
+
+  # Google Cloud variants
+  "google cloud": "gcp"
+  "google cloud platform": "gcp"
+
+  # Machine learning shorthand
+  "ml": "machine learning"
+
+  # CI/CD variants
+  "ci cd": "ci/cd"
+  "cicd": "ci/cd"
+
+  # Common JS framework / runtime aliasing
+  "reactjs": "react"
+  "react.js": "react"
+  "vuejs": "vue"
+  "vue.js": "vue"
+  "nextjs": "next.js"
+
+  # Data tooling
+  "pandas": "pandas"           # keep as-is but normalises "Pandas"
+  "scikit learn": "scikit-learn"
+  "scikit-learn": "scikit-learn"
+
+  # Cloud shorthand
+  "amazon web services": "aws"
+  "microsoft azure": "azure"
+
+  # Misc common collisions
+  "typescript": "typescript"   # keep; normalises "TypeScript"
+  "javascript": "javascript"   # keep; normalises "JavaScript"
+  "golang": "go"
+
 # Target seniority level for scoring.
 # One of: junior, mid, senior, lead
 target_seniority: "mid"

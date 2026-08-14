@@ -84,6 +84,22 @@ Trigger (scheduled)
 
 ---
 
+## Aggregate Analysis
+
+22. **Aggregate analysis is deterministic SQL and Python.** No LLM call may produce, adjust, or rank an aggregate number. A model may only SUGGEST canonical groupings for a human to approve.
+
+23. **Skill names are canonicalised through an explicit alias map in `config.yaml` that I own and can read.** Never auto-merge skill names by model judgement or string similarity alone.
+
+24. **Gap ranking is weighted by the fit score of the listing the gap came from.** A gap in a listing scored 20 is worth far less than a gap in a listing scored 85. Never rank gaps by raw frequency alone.
+
+25. **Every gap report run writes a timestamped snapshot.** Never overwrite the previous report. Trend over time is a first-class output, not an afterthought.
+
+26. **Every aggregate number must be traceable to the rows that produced it.** Any reported gap must be able to list the specific listing IDs it was computed from. No number appears in the dashboard that cannot be drilled into.
+
+27. **Report the sample size alongside every aggregate.** A gap computed from 3 listings and a gap computed from 90 listings must never be presented as equally reliable.
+
+---
+
 ## Style
 
 - Small, testable functions over large monolithic ones.
