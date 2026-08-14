@@ -28,6 +28,14 @@ _DEFAULTS: dict[str, Any] = {
     "min_fit_score": 50,
     "sources": ["arbeitnow"],
     "use_mock_fetcher": False,
+    "llm_provider": "gemini",
+    "llm_model": "gemini-2.5-flash",
+    "llm_batch_size": 25,
+    "target_seniority": "mid",
+    "w_skill_match": 0.45,
+    "w_seniority_fit": 0.25,
+    "w_location_fit": 0.15,
+    "w_recency": 0.15,
 }
 
 # ---------------------------------------------------------------------------
@@ -46,6 +54,14 @@ class Config:
     min_fit_score: int
     sources: list[str]
     use_mock_fetcher: bool
+    llm_provider: str
+    llm_model: str
+    llm_batch_size: int
+    target_seniority: str
+    w_skill_match: float
+    w_seniority_fit: float
+    w_location_fit: float
+    w_recency: float
 
 
 # ---------------------------------------------------------------------------
@@ -94,4 +110,12 @@ def load_config(config_path: Path | None = None) -> Config:
         min_fit_score=int(merged["min_fit_score"]),
         sources=list(merged["sources"]),
         use_mock_fetcher=bool(merged["use_mock_fetcher"]),
+        llm_provider=str(merged["llm_provider"]),
+        llm_model=str(merged["llm_model"]),
+        llm_batch_size=int(merged["llm_batch_size"]),
+        target_seniority=str(merged["target_seniority"]),
+        w_skill_match=float(merged["w_skill_match"]),
+        w_seniority_fit=float(merged["w_seniority_fit"]),
+        w_location_fit=float(merged["w_location_fit"]),
+        w_recency=float(merged["w_recency"]),
     )

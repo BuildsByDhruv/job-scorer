@@ -43,13 +43,14 @@ class _PlaceholderAgent:
 
 from edgedash.agents.fetcher import Fetcher
 from edgedash.agents.mock_fetcher import MockFetcher
+from edgedash.agents.scorer import Scorer
 
 
 def _build_registry(config: Config) -> list[Agent]:
     fetcher: Agent = MockFetcher() if config.use_mock_fetcher else Fetcher()
     return [
         fetcher,
-        _PlaceholderAgent("scorer"),
+        Scorer(),
         _PlaceholderAgent("gap_analyzer"),
     ]
 

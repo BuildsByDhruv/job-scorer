@@ -46,3 +46,22 @@ sources:
 # Set to true to use the hardcoded mock fetcher instead of live sources.
 # Useful for offline development and testing.
 use_mock_fetcher: false
+
+# LLM provider used by the Scorer agent.
+# Supported providers: "gemini" (needs GEMINI_API_KEY in .env),
+#                      "ollama"  (local, no key required).
+llm_provider: "gemini"
+llm_model: "gemini-2.5-flash"
+
+# Maximum listings scored per cycle (rule 21 — cost/rate-limit guard).
+llm_batch_size: 25
+
+# Target seniority level for scoring.
+# One of: junior, mid, senior, lead
+target_seniority: "mid"
+
+# Scoring weights — must sum to 1.0 (loader normalises automatically).
+w_skill_match:   0.45
+w_seniority_fit: 0.25
+w_location_fit:  0.15
+w_recency:       0.15
