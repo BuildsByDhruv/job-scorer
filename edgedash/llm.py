@@ -49,6 +49,14 @@ class LLMError(RuntimeError):
     """Raised when the LLM cannot produce a valid response after all retries."""
 
 
+class LLMQuotaExhausted(LLMError):
+    """Raised when the daily (or project-level) quota is exhausted.
+
+    Callers must stop the batch immediately — retrying will not help until
+    the quota resets (midnight Pacific for Gemini free tier).
+    """
+
+
 # ---------------------------------------------------------------------------
 # Rate limiter (shared across all providers)
 # ---------------------------------------------------------------------------
@@ -219,8 +227,27 @@ class _GeminiProvider(_Provider):
                 code = getattr(exc, "code", None)
                 text = str(exc)
 
-                # 429 / RESOURCE_EXHAUSTED — back off and retry.
+                # 429 / RESOURCE_EXHAUSTED — check whether it's the daily
+                # quota (unrecoverable until midnight) or a per-minute rate
+                # limit (recoverable with back-off).
                 if code == 429 or "RESOURCE_EXHAUSTED" in text:
+                    # Daily quota keywords present in the violation details.
+                    daily_keywords = (
+                        "PerDay",
+                        "per_day",
+                        "daily",
+                        "FreeTier",
+                        "free_tier",
+                    )
+                    is_daily = any(kw.lower() in text.lower() for kw in daily_keywords)
+
+                    if is_daily:
+                        raise LLMQuotaExhausted(
+                            f"Gemini daily quota exhausted: {exc}. "
+                            f"Quota resets at midnight Pacific — stopping batch."
+                        ) from exc
+
+                    # Per-minute rate limit — back off and retry.
                     if attempt == 2:
                         raise LLMError(f"Gemini quota exhausted: {exc}") from exc
                     # Honour the retry delay the API returns when present.
@@ -239,6 +266,17 @@ class _GeminiProvider(_Provider):
 
                 # Any other client error (404 bad model name, etc.) — fail fast.
                 raise LLMError(f"Gemini API error: {exc}") from exc
+
+            except _gerr.ServerError as exc:
+                # 503 / 500 — transient server overload; back off and retry.
+                code = getattr(exc, "code", None)
+                if attempt == 2:
+                    raise LLMError(
+                        f"Gemini server error after 3 attempts (code {code}): {exc}"
+                    ) from exc
+                time.sleep(backoff)
+                backoff *= 2
+                continue
 
 
 class _OllamaProvider(_Provider):

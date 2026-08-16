@@ -19,7 +19,7 @@ import edgedash.storage as storage
 from edgedash.agents.base import AgentResult
 from edgedash.agents.extractor import extract
 from edgedash.config import Config
-from edgedash.llm import LLMError
+from edgedash.llm import LLMError, LLMQuotaExhausted
 from edgedash.scoring import score_listing
 
 
@@ -47,6 +47,30 @@ class Scorer:
             try:
                 facts  = extract(listing, config, db_path)
                 result = score_listing(listing, facts, config)
+            except LLMQuotaExhausted as exc:
+                # Daily quota is gone — no point attempting further listings.
+                failed_count += 1
+                notes = (
+                    f"scored {scored_count} · STOPPED: daily quota exhausted "
+                    f"· {failed_count} failed · quota resets midnight Pacific"
+                )
+                storage.log_cycle(
+                    path=db_path,
+                    agent="scorer/quota",
+                    started_at=started_at,
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    records_touched=scored_count,
+                    status="failed",
+                    notes=str(exc),
+                )
+                print(f"  ✗  [scorer] daily quota exhausted — stopping batch. "
+                      f"({scored_count} scored before hitting limit)")
+                return AgentResult(
+                    agent=self.name,
+                    status="failed",
+                    records_touched=scored_count,
+                    notes=notes,
+                )
             except LLMError as exc:
                 failed_count += 1
                 storage.log_cycle(

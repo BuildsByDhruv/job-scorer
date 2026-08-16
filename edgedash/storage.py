@@ -567,48 +567,13 @@ def get_scored_listings_with_cache(path: str) -> list[dict[str, Any]]:
 
     Only listings with a non-NULL fit_score are returned.
     Listings with no matching cache row are excluded — they have no facts.
+
+    Uses a Python-side join with hashlib.sha256 to stay compatible with
+    all SQLite versions (sha256() was only added in SQLite 3.44).
     """
     import json as _json
     import hashlib as _hashlib
 
-    with _connect(path) as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                l.id,
-                l.fit_score,
-                e.required_skills,
-                e.nice_to_have
-            FROM listings l
-            JOIN extraction_cache e
-                ON e.description_hash = lower(hex(sha256(l.description)))
-            WHERE l.fit_score IS NOT NULL
-              AND l.description IS NOT NULL
-            """
-        ).fetchall()
-
-    # SQLite doesn't have sha256() before version 3.44.  Fall back to a
-    # Python-side join on a pre-computed hash so we stay compatible.
-    if not rows:
-        rows = _scored_listings_python_join(path, _json, _hashlib)
-
-    return [
-        {
-            "id":               r["id"],
-            "fit_score":        r["fit_score"],
-            "required_skills":  _json.loads(r["required_skills"] or "[]"),
-            "nice_to_have":     _json.loads(r["nice_to_have"] or "[]"),
-        }
-        for r in rows
-    ]
-
-
-def _scored_listings_python_join(
-    path: str,
-    _json: Any,
-    _hashlib: Any,
-) -> list[Any]:
-    """Python-side join for SQLite builds that lack sha256()."""
     with _connect(path) as conn:
         listings = conn.execute(
             "SELECT id, fit_score, description FROM listings "
@@ -628,20 +593,12 @@ def _scored_listings_python_join(
         h = _hashlib.sha256(desc.encode()).hexdigest()
         if h in cache:
             c = cache[h]
-
-            class _Row:
-                def __init__(self, data: dict[str, Any]) -> None:
-                    self._d = data
-
-                def __getitem__(self, k: str) -> Any:
-                    return self._d[k]
-
-            result.append(_Row({
+            result.append({
                 "id":              listing["id"],
                 "fit_score":       listing["fit_score"],
-                "required_skills": c["required_skills"],
-                "nice_to_have":    c["nice_to_have"],
-            }))
+                "required_skills": _json.loads(c["required_skills"] or "[]"),
+                "nice_to_have":    _json.loads(c["nice_to_have"] or "[]"),
+            })
 
     return result
 

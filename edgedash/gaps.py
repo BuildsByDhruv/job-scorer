@@ -1,8 +1,9 @@
 """Morning gap report — prints the latest snapshot as a readable terminal table.
 
 Usage:
-    python -m edgedash.gaps            # current snapshot
-    python -m edgedash.gaps --trend    # change from earliest to latest snapshot
+    python -m edgedash.gaps             # current snapshot, ranked by opportunity cost
+    python -m edgedash.gaps --compare   # side-by-side: raw frequency vs opportunity cost
+    python -m edgedash.gaps --trend     # change from earliest to latest snapshot
 """
 
 from __future__ import annotations
@@ -148,6 +149,134 @@ def print_gap_report(rows: list[dict], computed_at: str) -> None:
         ids_preview = ", ".join(i[:12] + "…" for i in top_ids[:3])
         print()
         print(f"{_DIM}  Top gap example listing IDs: {ids_preview}{_RESET}")
+    print()
+
+
+# ---------------------------------------------------------------------------
+# Dual-ranking comparison view
+# ---------------------------------------------------------------------------
+
+
+def print_compare_report(rows: list[dict], computed_at: str) -> None:
+    """Show top 10 by raw frequency alongside top 10 by opportunity cost.
+
+    Skills that appear in one ranking but not the other are highlighted so
+    the difference is immediately readable.
+    """
+    if not rows:
+        print("No gap snapshot found. Run a full cycle first.")
+        return
+
+    by_freq = sorted(rows, key=lambda r: r["listings_blocked"], reverse=True)[:_TOP_N]
+    by_cost = sorted(rows, key=lambda r: r["opportunity_cost"],  reverse=True)[:_TOP_N]
+
+    freq_skills = {r["skill"] for r in by_freq}
+    cost_skills = {r["skill"] for r in by_cost}
+
+    # Skills that rank differently between the two orderings.
+    only_in_freq = freq_skills - cost_skills   # high count, low quality listings
+    only_in_cost = cost_skills - freq_skills   # lower count, high quality listings
+
+    w_skill = max(
+        max(len(r["skill"]) for r in by_freq),
+        max(len(r["skill"]) for r in by_cost),
+        20,
+    )
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    print()
+    print(f"{_BOLD}{_CYAN}{'═' * 78}{_RESET}")
+    print(f"{_BOLD}{_CYAN}  SKILL GAP RANKING COMPARISON{_RESET}"
+          f"{_DIM}  ·  snapshot: {computed_at}{_RESET}")
+    print(f"{_BOLD}{_CYAN}{'═' * 78}{_RESET}")
+    print()
+    print(
+        f"{_DIM}  Left  — ranked by RAW FREQUENCY  (how many listings require it){_RESET}"
+    )
+    print(
+        f"{_DIM}  Right — ranked by OPPORTUNITY COST (Σ fit_score/100 of those listings){_RESET}"
+    )
+    print(
+        f"{_DIM}  {_YELLOW}Yellow{_DIM} = appears in this column only — "
+        f"ranking differs between the two.{_RESET}"
+    )
+    print()
+
+    col_w = w_skill + 10   # skill + count/cost value
+    divider = "  │  "
+
+    hdr_left  = f"  {'#':>3}  {'SKILL':<{w_skill}}  {'COUNT':>5}"
+    hdr_right = f"{'#':>3}  {'SKILL':<{w_skill}}  {'COST':>6}"
+    print(f"{_BOLD}{hdr_left}{divider}{hdr_right}{_RESET}")
+    sep_left  = f"  {'───':>3}  {'─' * w_skill}  {'─────':>5}"
+    sep_right = f"{'───':>3}  {'─' * w_skill}  {'──────':>6}"
+    print(f"{sep_left}{divider}{sep_right}")
+
+    for i in range(_TOP_N):
+        # Left column — by frequency
+        if i < len(by_freq):
+            fr = by_freq[i]
+            fs = fr["skill"]
+            fc = fr["listings_blocked"]
+            if fs in only_in_freq:
+                fl = f"{_YELLOW}{fs:<{w_skill}}{_RESET}"
+            else:
+                fl = f"{fs:<{w_skill}}"
+            left = f"  {i+1:>3}  {fl}  {fc:>5}"
+        else:
+            left = " " * (8 + w_skill + 7)
+
+        # Right column — by cost
+        if i < len(by_cost):
+            cr = by_cost[i]
+            cs = cr["skill"]
+            cc = cr["opportunity_cost"]
+            if cs in only_in_cost:
+                cl = f"{_YELLOW}{cs:<{w_skill}}{_RESET}"
+            else:
+                cl = f"{cs:<{w_skill}}"
+            right = f"{i+1:>3}  {cl}  {cc:>6.2f}"
+        else:
+            right = ""
+
+        print(f"{left}{divider}{right}")
+
+    # ── Commentary ────────────────────────────────────────────────────────────
+    print()
+    if only_in_freq or only_in_cost:
+        print(f"{_BOLD}  What moved:{_RESET}")
+
+        for skill in sorted(only_in_freq):
+            r = next(x for x in rows if x["skill"] == skill)
+            freq_rank = next(i+1 for i, x in enumerate(by_freq) if x["skill"] == skill)
+            print(
+                f"  {_YELLOW}↓ {skill}{_RESET} — "
+                f"rank #{freq_rank} by count ({r['listings_blocked']} listings) "
+                f"but not top {_TOP_N} by cost (mean score {r['mean_score']:.0f}). "
+                f"Those listings score low, so the gap matters less than the count suggests."
+            )
+
+        for skill in sorted(only_in_cost):
+            r = next(x for x in rows if x["skill"] == skill)
+            cost_rank = next(i+1 for i, x in enumerate(by_cost) if x["skill"] == skill)
+            print(
+                f"  {_CYAN}↑ {skill}{_RESET} — "
+                f"rank #{cost_rank} by cost ({r['opportunity_cost']:.2f}) "
+                f"but not top {_TOP_N} by count ({r['listings_blocked']} listings). "
+                f"Fewer listings require it, but they score high (mean {r['mean_score']:.0f}) — "
+                f"this gap costs more than its frequency implies."
+            )
+    else:
+        print(
+            f"{_DIM}  Both rankings are identical — the highest-frequency gaps "
+            f"also come from the highest-scoring listings.{_RESET}"
+        )
+
+    print()
+    print(
+        f"{_DIM}  OPP. COST = Σ(fit_score/100).  "
+        f"When the two columns diverge, cost is the actionable signal.{_RESET}"
+    )
     print()
 
 
@@ -337,7 +466,8 @@ def print_only_one_snapshot(computed_at: str) -> None:
 
 
 def main() -> None:
-    trend_mode = "--trend" in sys.argv
+    trend_mode   = "--trend"   in sys.argv
+    compare_mode = "--compare" in sys.argv
 
     try:
         cfg = load_config()
@@ -346,10 +476,14 @@ def main() -> None:
         sys.exit(1)
 
     storage.init_db(cfg.db_path)
+    rows = storage.get_latest_gap_snapshot(cfg.db_path)
+    computed_at = rows[0]["computed_at"] if rows else "—"
+
+    if compare_mode:
+        print_compare_report(rows, computed_at)
+        return
 
     if not trend_mode:
-        rows = storage.get_latest_gap_snapshot(cfg.db_path)
-        computed_at = rows[0]["computed_at"] if rows else "—"
         print_gap_report(rows, computed_at)
         return
 

@@ -49,8 +49,8 @@ Orchestrator
 - [x] `edgedash/agents/extractor.py` — LLM-backed fact extraction with description-hash cache
 - [x] `edgedash/agents/scorer.py` — Scorer agent; per-listing error isolation; distribution logging
 - [x] `edgedash/agents/gap_analyzer.py` — GapAnalyzer agent; deterministic; ranks gaps by opportunity cost
-- [x] `edgedash/skills.py` — `canonical()` normalisation + alias map; `--audit` CLI for raw skill inspection
-- [x] `edgedash/gaps.py` — morning gap report; `--trend` compares earliest vs latest snapshot
+- [x] `edgedash/skills.py` — `canonical()` normalisation + alias map; `--audit` and `--suggest-aliases` CLIs
+- [x] `edgedash/gaps.py` — morning gap report; `--compare` dual-ranking view; `--trend` compares earliest vs latest snapshot
 - [x] `edgedash/orchestrator.py` — reads state, plans, runs registered agents, logs every run to `cycle_log`
 - [x] `edgedash/diagnose.py` — read-only diagnostic: counts, cross-source duplicates, recent listings, quality issues
 - [x] `edgedash/rescore.py` — manual re-scoring escape hatch; never clears the extraction cache
@@ -99,8 +99,10 @@ python run_cycle.py
 |---|---|
 | `python run_cycle.py` | Run a full fetch + score + gap-analysis cycle |
 | `python -m edgedash.gaps` | Print the latest gap snapshot as a ranked table |
+| `python -m edgedash.gaps --compare` | Side-by-side: raw frequency vs opportunity cost ranking |
 | `python -m edgedash.gaps --trend` | Show how the top 10 gaps have moved since the first snapshot |
 | `python -m edgedash.skills --audit` | Inspect raw skill strings in the DB; find aliases to add |
+| `python -m edgedash.skills --suggest-aliases` | Ask the model to propose alias groupings (read-only, needs review) |
 | `python -m edgedash.diagnose` | Read-only DB diagnostic (counts, gaps, quality) |
 | `python -m edgedash.agents.scorer --limit 5` | Score up to 5 listings manually |
 | `python -m edgedash.rescore --id <id>` | Clear one listing's score for re-scoring |
@@ -188,20 +190,25 @@ skill names automatically. Run `python -m edgedash.skills --audit` after a few
 cycles to see the 40 most common raw strings and a list of singletons (typos and
 junk), then add any new aliases you spot.
 
+Run `python -m edgedash.skills --suggest-aliases` to get model-proposed groupings
+for strings not yet in your alias map. This makes one LLM call, prints
+ready-to-paste YAML, and writes nothing. All suggestions require your review —
+the model flags its own low-confidence proposals, and the tool highlights any
+proposal that conflicts with a decision already in your map.
+
 ---
 
 ## LLM configuration
 
 ```yaml
 llm_provider: "gemini"          # "gemini" or "ollama"
-llm_model: "gemini-2.5-flash"
+llm_model: "gemini-3.5-flash"
 llm_batch_size: 25              # max listings scored per cycle
 ```
 
-The Gemini free tier allows 20 requests per day on `gemini-2.5-flash`. Set
-`llm_batch_size` to 15 or lower to stay within the limit per run, or use
-`gemini-2.5-flash-lite` for a higher quota. For fully local inference with no API
-key, set `llm_provider: "ollama"` and run Ollama locally.
+The Gemini free tier allows 1,000 requests/day on `gemini-3.5-flash`. For the
+highest free quota use `gemini-3.1-flash-lite`. For fully local inference with no
+API key, set `llm_provider: "ollama"` and run Ollama locally.
 
 ---
 
@@ -242,6 +249,11 @@ The same job description, re-fetched from a different source or on a later run,
 hits the cache and costs zero API calls. Re-scoring after changing your skills or
 weights is free.
 
+**Secrets load in one place.**
+`run_cycle.py` calls `load_dotenv()` before any other import. No other file reads
+`.env`. If a key is missing, the relevant source or provider skips itself with a
+log line rather than raising.
+
 **Gap history is append-only.**
 `skill_gap_snapshots` uses `INSERT` only — no `UPDATE`, no `DELETE`. Each run
 gets a UUID `run_id`. The trend view reads the earliest and latest run by
@@ -254,7 +266,21 @@ The alias map in `config.yaml` is the single source of truth for what two skill
 names mean the same thing. The model never merges names. You add aliases when you
 see collisions in the `--audit` output.
 
-**Secrets load in one place.**
-`run_cycle.py` calls `load_dotenv()` before any other import. No other file reads
-`.env`. If a key is missing, the relevant source or provider skips itself with a
-log line rather than raising.
+**Gap ranking uses opportunity cost, not raw frequency.**
+`python -m edgedash.gaps --compare` shows both rankings side by side. A skill
+that appears in many listings but those listings score poorly ranks lower by cost
+than a skill that appears less often but blocks your best opportunities. When the
+two columns diverge, cost is the actionable signal.
+
+**The LLM may suggest aliases but never applies them.**
+`--suggest-aliases` sends unaliased canonical strings to the model and asks for
+groupings. The model returns structured proposals with a confidence level. The
+tool prints ready-to-paste YAML and flags anything that contradicts your existing
+map. Nothing is written. You decide what gets added.
+
+**503 and 429 errors are both handled without crashing.**
+Transient server overload (503) backs off and retries up to 3 times. Per-minute
+rate limits (429) honour the `retry-after` delay from the API response. Daily
+quota exhaustion (429 with `PerDay` / `FreeTier` in the error body) stops the
+batch immediately with a clear message rather than grinding through 3 back-off
+attempts per listing.
