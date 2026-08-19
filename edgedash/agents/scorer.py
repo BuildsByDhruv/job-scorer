@@ -12,8 +12,9 @@ Rule 21: batch capped at config.llm_batch_size.
 from __future__ import annotations
 
 import statistics
+import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import edgedash.storage as storage
 from edgedash.agents.base import AgentResult
@@ -22,12 +23,32 @@ from edgedash.config import Config
 from edgedash.llm import LLMError, LLMQuotaExhausted
 from edgedash.scoring import score_listing
 
+if TYPE_CHECKING:
+    from edgedash.planning import StopConditions
+
 
 class Scorer:
     name: str = "scorer"
 
-    def run(self, config: Config, db_path: str) -> AgentResult:
-        batch = storage.get_unscored_listings(db_path, limit=config.llm_batch_size)
+    def run(
+        self,
+        config: Config,
+        db_path: str,
+        stop_conditions: "StopConditions | None" = None,
+    ) -> AgentResult:
+        # Respect Orchestrator-supplied limits (rule 29).
+        batch_size = (
+            stop_conditions.max_items
+            if stop_conditions and stop_conditions.max_items is not None
+            else config.llm_batch_size
+        )
+        max_seconds = (
+            stop_conditions.max_seconds
+            if stop_conditions and stop_conditions.max_seconds is not None
+            else None
+        )
+
+        batch = storage.get_unscored_listings(db_path, limit=batch_size)
 
         if not batch:
             return AgentResult(
@@ -41,8 +62,15 @@ class Scorer:
         failed_count = 0
         scores: list[int] = []
         started_at = datetime.now(timezone.utc).isoformat()
+        deadline = time.monotonic() + max_seconds if max_seconds else None
 
         for listing in batch:
+            # Wall-clock stop condition (rule 29).
+            if deadline is not None and time.monotonic() >= deadline:
+                print(f"  ⚠  [scorer] max_seconds={max_seconds} reached — "
+                      f"stopping after {scored_count} scored")
+                break
+
             listing_id = listing["id"]
             try:
                 facts  = extract(listing, config, db_path)

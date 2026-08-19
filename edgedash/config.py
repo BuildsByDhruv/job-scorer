@@ -37,6 +37,12 @@ _DEFAULTS: dict[str, Any] = {
     "w_location_fit": 0.15,
     "w_recency": 0.15,
     "skill_aliases": {},
+    # Orchestration thresholds
+    "fetch_interval_hours": 6,
+    "fetch_max_pages": 5,
+    "fetch_max_listings": 200,
+    "score_max_seconds": 300,
+    "analyse_max_seconds": 60,
 }
 
 # ---------------------------------------------------------------------------
@@ -64,6 +70,12 @@ class Config:
     w_location_fit: float
     w_recency: float
     skill_aliases: dict[str, str]
+    # Orchestration thresholds
+    fetch_interval_hours: int
+    fetch_max_pages: int
+    fetch_max_listings: int
+    score_max_seconds: int
+    analyse_max_seconds: int
 
 
 # ---------------------------------------------------------------------------
@@ -124,4 +136,9 @@ def load_config(config_path: Path | None = None) -> Config:
             str(k): str(v)
             for k, v in (merged.get("skill_aliases") or {}).items()
         },
+        fetch_interval_hours=int(merged["fetch_interval_hours"]),
+        fetch_max_pages=int(merged["fetch_max_pages"]),
+        fetch_max_listings=int(merged["fetch_max_listings"]),
+        score_max_seconds=int(merged["score_max_seconds"]),
+        analyse_max_seconds=int(merged["analyse_max_seconds"]),
     )

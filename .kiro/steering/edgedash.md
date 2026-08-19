@@ -100,6 +100,22 @@ Trigger (scheduled)
 
 ---
 
+## Orchestration
+
+28. **The Orchestrator reads system state and decides which agents to run.** It never runs a fixed sequence. Skipping an agent because there is no work for it is a SUCCESSFUL outcome, not a failure.
+
+29. **Every delegation carries an explicit goal and an explicit stop condition** (max items, max duration). A sub-agent never decides its own limits — the Orchestrator sets them.
+
+30. **The Orchestrator never does an agent's work.** It reads state, delegates, collects results, logs. No fetching, scoring, or analysis logic in the Orchestrator.
+
+31. **The Orchestrator prints and logs its PLAN before executing it** — which agents will run, which are skipped, and the state value that caused each decision.
+
+32. **One sub-agent failing does not stop the cycle.** Log the failure, continue with the remaining plan, and mark the cycle partial.
+
+33. **Every cycle writes exactly one summary row:** what ran, what was skipped, why, duration per agent, and the outcome.
+
+---
+
 ## Style
 
 - Small, testable functions over large monolithic ones.

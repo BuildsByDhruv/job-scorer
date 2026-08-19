@@ -1,69 +1,118 @@
 # EdgeDash
 
-EdgeDash is an autonomous career intelligence agent that runs on a daily schedule,
-fetches live job listings from configurable sources, scores each listing for fit
-against your personal profile, identifies skill gaps between your current skills
-and what the market is asking for, verifies its own output for consistency, and
-publishes the results to a local Streamlit dashboard — all without manual
-intervention.
+> **Your job search, running while you sleep.**
+
+EdgeDash is an autonomous career intelligence agent. Every day it fetches live
+job listings, scores each one against your profile, ranks your skill gaps by the
+cost they're actually extracting from you, and surfaces the delta since yesterday.
+You wake up to a ranked table, not a pile of unread postings.
+
+---
+
+## What it actually does
+
+```
+08:00  →  Fetcher pulls 37 new listings from Arbeitnow
+           4 are genuinely new (stable-hash deduplication)
+
+08:01  →  Scorer extracts facts via LLM (one call per unique description)
+           then scores deterministically — no model touches the number
+           scored 25 · range 31-84 · mean 61 · spread OK
+
+08:02  →  GapAnalyzer compares required skills to your profile
+           ranks gaps by Σ(fit_score/100) — a gap in an 85-score listing
+           outweighs a gap in a 20-score listing, even at equal frequency
+
+08:02  →  Writes one timestamped snapshot to skill_gap_snapshots
+           Previous snapshots never overwritten — trend data is permanent
+```
+
+Then you run:
+
+```
+python -m edgedash.gaps
+```
+
+And you see this:
+
+```
+════════════════════════════════════════════════════════════════════════
+  SKILL GAP REPORT  ·  snapshot: 2026-08-19T08:02:31
+
+   #  SKILL                  BLOCKED  OPP. COST   MEAN   TOP  BAR
+   1  kubernetes                  31      24.10     78    91  ████████████████████
+   2  terraform                   18      13.40     74    88  ███████████░░░░░░░░░
+   3  ci/cd                       22      12.90     59    84  ██████████░░░░░░░░░░
+════════════════════════════════════════════════════════════════════════
+```
 
 ---
 
 ## Architecture
 
 ```
-Trigger (scheduled)
-    |
-    v
-Orchestrator
-    |-- Fetcher       fetches raw listings from job sources
-    |-- Scorer        extracts facts (LLM) then scores deterministically
-    +-- GapAnalyzer   surfaces skills that appear in listings but not your profile
-         |
-         v
-       Verifier       checks output for consistency before committing
-         |
-         v
-       Storage        single module; all DB access goes through here
-         |
-         v
-       Dashboard      read-only Streamlit view of scored listings and gaps
+run_cycle.py
+    │
+    ├─ state.py         read_state(config, now) → SystemState
+    │                   cheap MAX/COUNT queries, clock is a parameter
+    │
+    ├─ planning.py      build_plan(state, config) → Plan
+    │                   pure function, no I/O, skips are explicit
+    │
+    └─ orchestrator.py  executes the plan, wraps each agent in try/except,
+                        writes exactly one summary row, marks cycle partial
+                        if any agent fails — never stops the cycle
+                             │
+                             ├── Fetcher       one source = one try/except
+                             ├── Scorer        LLM extract → deterministic score
+                             └── GapAnalyzer   pure arithmetic, no model
+                                      │
+                                      └── storage.py  the ONLY file that
+                                                       touches sqlite3
 ```
+
+**Adding a fourth agent: one registry entry + one decision block in `build_plan`.
+Nothing else changes.**
 
 ---
 
 ## Current status
 
 ### Built
-- [x] `edgedash/config.py` — `Config` dataclass loaded from `config.yaml`; includes `skill_aliases` map
-- [x] `edgedash/storage.py` — SQLite backend behind a thin interface; `skill_gap_snapshots` table is append-only
-- [x] `edgedash/agents/base.py` — `Agent` protocol and `AgentResult` dataclass
-- [x] `edgedash/agents/mock_fetcher.py` — offline mock; swap back in via `use_mock_fetcher: true` in `config.yaml`
-- [x] `edgedash/agents/fetcher.py` — real Fetcher; queries all enabled sources, logs each per-source outcome
-- [x] `edgedash/sources/base.py` — `Source` protocol, `SOURCES` registry, `@register` decorator
-- [x] `edgedash/sources/http.py` — shared HTTP helper (timeout, retries, rate-limiting, User-Agent)
-- [x] `edgedash/sources/arbeitnow.py` — Arbeitnow free public job board (no key required)
-- [x] `edgedash/sources/apify.py` — Apify / Indeed scraper (requires `APIFY_TOKEN` in `.env`)
-- [x] `edgedash/llm.py` — single LLM gateway; Gemini and Ollama providers; rate-limited; validates all responses
-- [x] `edgedash/scoring.py` — deterministic scorer; four weighted components; no model calls
-- [x] `edgedash/agents/extractor.py` — LLM-backed fact extraction with description-hash cache
-- [x] `edgedash/agents/scorer.py` — Scorer agent; per-listing error isolation; distribution logging
-- [x] `edgedash/agents/gap_analyzer.py` — GapAnalyzer agent; deterministic; ranks gaps by opportunity cost
-- [x] `edgedash/skills.py` — `canonical()` normalisation + alias map; `--audit` and `--suggest-aliases` CLIs
-- [x] `edgedash/gaps.py` — morning gap report; `--compare` dual-ranking view; `--trend` compares earliest vs latest snapshot
-- [x] `edgedash/orchestrator.py` — reads state, plans, runs registered agents, logs every run to `cycle_log`
-- [x] `edgedash/diagnose.py` — read-only diagnostic: counts, cross-source duplicates, recent listings, quality issues
-- [x] `edgedash/rescore.py` — manual re-scoring escape hatch; never clears the extraction cache
-- [x] `run_cycle.py` — single entry point
-- [x] `tests/test_scoring.py` — 25 unit tests for the deterministic scorer
-- [x] `tests/test_skills.py` — 26 unit tests for `canonical()`
+| Module | What it does |
+|---|---|
+| `edgedash/config.py` | `Config` dataclass from `config.yaml`; `skill_aliases` map |
+| `edgedash/storage.py` | SQLite behind a thin interface; `skill_gap_snapshots` append-only |
+| `edgedash/state.py` | `read_state(config, now)` — `now` is a param, fully testable |
+| `edgedash/planning.py` | `build_plan(state, config)` pure function; explicit skip reasons |
+| `edgedash/orchestrator.py` | State-driven cycle; one summary row; `partial` on any failure |
+| `edgedash/agents/base.py` | `Agent` protocol; `stop_conditions` passed by Orchestrator |
+| `edgedash/agents/fetcher.py` | Live fetcher; per-source isolation; respects `max_listings` |
+| `edgedash/agents/mock_fetcher.py` | Offline mock; `use_mock_fetcher: true` in config |
+| `edgedash/agents/scorer.py` | Batch scorer; quota-exhaustion stops immediately, not per-listing |
+| `edgedash/agents/extractor.py` | LLM extraction with description-hash cache |
+| `edgedash/agents/gap_analyzer.py` | Deterministic gap ranking by opportunity cost |
+| `edgedash/sources/base.py` | `Source` protocol; `@register` decorator |
+| `edgedash/sources/http.py` | Shared HTTP helper: timeout, retries, rate-limit, User-Agent |
+| `edgedash/sources/arbeitnow.py` | Arbeitnow free board (no key) |
+| `edgedash/sources/apify.py` | Apify / Indeed scraper (`APIFY_TOKEN` in `.env`) |
+| `edgedash/llm.py` | Single LLM gateway; 503 retries; daily quota detected and stopped fast |
+| `edgedash/scoring.py` | Four-component deterministic scorer; model never touches the number |
+| `edgedash/skills.py` | `canonical()` pipeline; `--audit`; `--suggest-aliases` |
+| `edgedash/gaps.py` | `--compare` (freq vs cost); `--trend` (earliest → latest snapshot) |
+| `edgedash/diagnose.py` | Read-only DB health check |
+| `edgedash/rescore.py` | Wipe scores without touching extraction cache |
+| `run_cycle.py` | Entry point: `--dry-run`, `--force`, `--explain` |
+| `tests/test_scoring.py` | 25 tests — deterministic scorer |
+| `tests/test_skills.py` | 26 tests — `canonical()` |
+| `tests/test_planning.py` | 32 tests — `build_plan()` and `Plan.render()` |
 
 ### Remaining
-- [ ] `Verifier` agent
-- [ ] Streamlit dashboard (read-only)
+- [ ] `Verifier` agent — consistency check before committing results
+- [ ] Streamlit dashboard — read-only view of scored listings and gaps
 
 ### Week 4
-- [ ] Swap SQLite for hosted Postgres (one-file change in `storage.py`)
+- [ ] Swap SQLite → hosted Postgres (one-file change in `storage.py`)
 - [ ] Deploy scheduled trigger (cron / cloud scheduler)
 
 ---
@@ -74,18 +123,11 @@ Requires **Python 3.11+**.
 
 ```bash
 pip install -r requirements.txt
+cp .env.example .env   # then add GEMINI_API_KEY and optionally APIFY_TOKEN
 ```
 
-Copy `.env.example` to `.env` and fill in your API keys:
-
-```bash
-cp .env.example .env
-# edit .env and set APIFY_TOKEN and GEMINI_API_KEY
-```
-
-Edit `config.yaml` to set your target role, city, skills, seniority, enabled
-sources, and the `skill_aliases` map. Every user-specific value lives there —
-nothing is hardcoded.
+Edit `config.yaml` — role, city, skills, seniority, sources, alias map. Every
+user-specific value lives there. Nothing is hardcoded.
 
 ```bash
 python run_cycle.py
@@ -95,192 +137,162 @@ python run_cycle.py
 
 ## Commands
 
+### Cycle control
+
 | Command | What it does |
 |---|---|
-| `python run_cycle.py` | Run a full fetch + score + gap-analysis cycle |
-| `python -m edgedash.gaps` | Print the latest gap snapshot as a ranked table |
-| `python -m edgedash.gaps --compare` | Side-by-side: raw frequency vs opportunity cost ranking |
-| `python -m edgedash.gaps --trend` | Show how the top 10 gaps have moved since the first snapshot |
-| `python -m edgedash.skills --audit` | Inspect raw skill strings in the DB; find aliases to add |
-| `python -m edgedash.skills --suggest-aliases` | Ask the model to propose alias groupings (read-only, needs review) |
-| `python -m edgedash.diagnose` | Read-only DB diagnostic (counts, gaps, quality) |
-| `python -m edgedash.agents.scorer --limit 5` | Score up to 5 listings manually |
-| `python -m edgedash.rescore --id <id>` | Clear one listing's score for re-scoring |
+| `python run_cycle.py` | Run a full state-driven cycle |
+| `python run_cycle.py --dry-run` | Print the plan, exit — zero writes, zero API calls |
+| `python run_cycle.py --dry-run --explain` | Show every state value + the decision it drove, then exit |
+| `python run_cycle.py --explain` | Same breakdown, then execute |
+| `python run_cycle.py --force scorer` | Force scorer even if nothing is unscored |
+| `python run_cycle.py --force fetcher --force scorer` | Force multiple agents |
+
+### Gap intelligence
+
+| Command | What it does |
+|---|---|
+| `python -m edgedash.gaps` | Latest gap snapshot, ranked by opportunity cost |
+| `python -m edgedash.gaps --compare` | Both rankings side by side — frequency vs cost |
+| `python -m edgedash.gaps --trend` | How the top 10 gaps moved since the first snapshot |
+
+### Skill maintenance
+
+| Command | What it does |
+|---|---|
+| `python -m edgedash.skills --audit` | 40 most common raw strings + singletons (typos/junk) |
+| `python -m edgedash.skills --suggest-aliases` | One model call → ready-to-paste YAML; writes nothing |
+
+### Diagnostics and maintenance
+
+| Command | What it does |
+|---|---|
+| `python -m edgedash.diagnose` | Counts, duplicates, quality issues |
+| `python -m edgedash.agents.scorer --limit 5` | Score N listings manually |
+| `python -m edgedash.rescore --id <id>` | Clear one listing's score |
 | `python -m edgedash.rescore --all` | Clear all scores (prompts for confirmation) |
-| `python -m edgedash.llm --check` | Verify LLM provider and model are working |
-| `python -m pytest tests/` | Run the test suite |
+| `python -m edgedash.llm --check` | Verify LLM provider and model |
+| `python -m pytest tests/` | Run the test suite (83 tests, ~0.5s) |
 
 ---
 
-## Sources
+## How scoring works
 
-| Source | Key required | Notes |
-|---|---|---|
-| `arbeitnow` | No | Free public API; Europe-focused |
-| `apify` | `APIFY_TOKEN` in `.env` | Scrapes Indeed via Apify actor |
-
-Enable or disable sources in `config.yaml`:
-
-```yaml
-sources:
-  - "arbeitnow"
-  # - "apify"   # uncomment after adding APIFY_TOKEN to .env
+**Step 1 — Extract** (one LLM call per unique description, cached forever):
+```
+job description  →  { required_skills, nice_to_have, seniority, remote_ok, years }
 ```
 
-Set `use_mock_fetcher: true` to run entirely offline with hardcoded listings.
+**Step 2 — Score** (pure Python, no model):
+```
+skill_match    × 0.45   fraction of required skills you have
+seniority_fit  × 0.25   band distance from your target
+location_fit   × 0.15   remote / city match / elsewhere
+recency        × 0.15   linear decay: 1.0 today → 0.0 at 30 days
+─────────────────────
+fit_score  ∈ [0, 100]
+```
+
+All weights are tunable in `config.yaml`. The reason string is built from
+component values by code — the model never writes a word of it.
+
+Re-scoring is free. `python -m edgedash.rescore --all` clears scores without
+touching the extraction cache. Next cycle re-scores from cached facts at zero
+API cost.
 
 ---
 
-## Scoring
+## How gap ranking works
 
-Scoring is split into two steps that run in sequence for each listing:
+```
+opportunity_cost(skill) = Σ (fit_score / 100)
+                            for each scored listing where:
+                              skill ∈ required_skills
+                              AND skill ∉ my_skills
+```
 
-**Extraction** (`extractor.py`) calls the LLM once per unique job description to
-pull out structured facts: required skills, nice-to-haves, seniority level, years
-required, and remote availability. Results are cached by a hash of the description
-text — the same text is never sent to the model twice, even across cycles.
-
-**Scoring** (`scoring.py`) takes those facts and computes a deterministic 0–100
-score using four weighted components. No model is involved in this step.
-
-| Component | Default weight | Logic |
-|---|---|---|
-| `skill_match` | 0.45 | Fraction of required skills you have; nice-to-haves count at ⅓ weight |
-| `seniority_fit` | 0.25 | Band distance from your target: exact=1.0, ±1=0.6, ±2=0.25, ≥3=0.0 |
-| `location_fit` | 0.15 | Remote→1.0, city match→1.0, unknown→0.5, elsewhere→0.1 |
-| `recency` | 0.15 | Linear decay from 1.0 (today) to 0.0 (30 days old) |
-
-All four weights are tunable in `config.yaml`. The reason string is assembled from
-the component values by code — the model never writes it.
-
-Re-scoring is free: `python -m edgedash.rescore --all` clears scores without
-touching the extraction cache, so the next cycle re-scores using cached facts.
+A listing scored 85 contributes 0.85. One scored 20 contributes 0.20. Two gaps
+at the same raw frequency rank differently if the listings behind them differ in
+quality. `--compare` shows the two rankings side by side so you can see exactly
+what moved and why.
 
 ---
 
-## Gap analysis
+## How the Orchestrator decides
 
-After every scoring run, `GapAnalyzer` compares the required skills from each
-scored listing against your `my_skills` list in `config.yaml`. All comparisons go
-through `canonical()`, so `"K8s"`, `"k8s"`, and `"kubernetes"` are treated as the
-same skill.
+```
+state.hours_since_fetch >= fetch_interval_hours  →  ▶ RUN  fetcher
+state.unscored_count > 0                         →  ▶ RUN  scorer
+state.gaps_stale OR gaps_computed_at is None     →  ▶ RUN  gap_analyzer
+otherwise                                        →  ○ SKIP  (this is a success)
+```
 
-Each gap is ranked by **opportunity cost** — the sum of `fit_score / 100` for
-every listing blocked by that gap. A gap in a listing scored 85 outweighs a gap
-in a listing scored 20, even if raw frequency is the same.
-
-Every run writes a timestamped snapshot to `skill_gap_snapshots`. Previous
-snapshots are never overwritten, so trend data accumulates automatically. After
-two or more daily runs, `python -m edgedash.gaps --trend` shows the real movement
-between your earliest and latest snapshot.
+Every skip is explicit and logged with the state value that caused it. Use
+`--explain` to see the full breakdown. Use `--force <agent>` to override a skip;
+the override is recorded in the cycle summary row.
 
 ---
 
 ## Skill canonicalisation
 
-Skill names from job listings are normalised before any comparison:
-1. Lowercase and strip whitespace
-2. Drop parenthetical qualifiers — `"kubernetes (eks)"` → `"kubernetes"`
-3. Strip surrounding punctuation
-4. Collapse internal whitespace
-5. Apply the alias map from `config.yaml`
+Raw strings from job listings go through a normalisation pipeline before any
+comparison:
 
-The alias map (`skill_aliases`) is yours to maintain. The system never merges
-skill names automatically. Run `python -m edgedash.skills --audit` after a few
-cycles to see the 40 most common raw strings and a list of singletons (typos and
-junk), then add any new aliases you spot.
+```
+"Kubernetes (EKS)"  →  lowercase  →  drop (qualifier)  →  strip punctuation
+                    →  collapse whitespace  →  alias lookup  →  "kubernetes"
+```
 
-Run `python -m edgedash.skills --suggest-aliases` to get model-proposed groupings
-for strings not yet in your alias map. This makes one LLM call, prints
-ready-to-paste YAML, and writes nothing. All suggestions require your review —
-the model flags its own low-confidence proposals, and the tool highlights any
-proposal that conflicts with a decision already in your map.
+The alias map in `config.yaml` is yours to own. The model never merges names.
+Run `--audit` to find collisions. Run `--suggest-aliases` to get model proposals
+— it prints YAML, writes nothing, and flags conflicts with your existing map.
 
 ---
 
 ## LLM configuration
 
 ```yaml
-llm_provider: "gemini"          # "gemini" or "ollama"
+llm_provider: "gemini"        # "gemini" or "ollama"
 llm_model: "gemini-3.5-flash"
-llm_batch_size: 25              # max listings scored per cycle
+llm_batch_size: 25            # Orchestrator passes this as stop_condition
 ```
 
-The Gemini free tier allows 1,000 requests/day on `gemini-3.5-flash`. For the
-highest free quota use `gemini-3.1-flash-lite`. For fully local inference with no
-API key, set `llm_provider: "ollama"` and run Ollama locally.
+| Scenario | Solution |
+|---|---|
+| Daily quota hit | `LLMQuotaExhausted` stops the batch immediately — no grinding retries |
+| 503 overload | Backs off and retries up to 3× before raising `LLMError` |
+| Per-minute 429 | Honours the `retry-after` from the API response |
+| No API key | Set `llm_provider: "ollama"` and run locally |
 
 ---
 
 ## Design decisions
 
 **Storage is isolated behind one module.**
-`edgedash/storage.py` is the only file permitted to import `sqlite3`. Every other
-module calls its thin public interface. When the backend moves to Postgres in
-week 4, the change is contained to that one file — no grep-and-replace across
-the codebase.
+`edgedash/storage.py` is the only file permitted to import `sqlite3`. The backend
+moves to Postgres in week 4 with a single-file change.
 
-**Listing IDs are stable hashes of source and URL.**
-A SHA-256 digest of `(source, url)` is computed before any insert. The same job
-re-fetched on a later run produces the same ID, so `INSERT OR IGNORE` silently
-skips it. The count of genuinely new rows is returned and logged, making
-deduplication observable rather than invisible.
+**Listing IDs are stable hashes.**
+`SHA-256(source + url)` is the primary key. The same job re-fetched on a later
+run hits `INSERT OR IGNORE` silently. Deduplication is observable, not invisible.
 
-**The Orchestrator delegates; it never does the work itself.**
-The Orchestrator reads state, decides which agents to run and why, then hands off
-to each agent. This keeps the decision logic and the execution logic separate,
-makes each agent independently testable, and means a new agent can be wired in by
-adding one entry to the registry without touching any existing code.
+**The Orchestrator is state-driven, not sequence-driven.**
+`build_plan` is a pure function of `(state, config)`. Skips are explicit entries
+in the plan with the state value that caused them. One agent failing marks the
+cycle `partial` — it never stops the remaining agents.
 
-**Every source sits behind a uniform interface.**
-The `Source` protocol and `@register` decorator mean the Fetcher never contains
-source-specific logic. Adding a new job board is one new file and one decorator —
-nothing else changes. A source failing never kills the cycle; errors are caught
-per-source, logged to `cycle_log`, and the next source continues.
+**Scoring is split: model extracts facts, Python scores them.**
+The model never sees weights and never produces a number. Scores are reproducible,
+auditable, and free to recompute when you tune the weights.
 
-**Scoring is split: LLM extracts facts, Python scores them.**
-The model never sees scoring weights and never produces a number. It reads a job
-description and returns structured facts. A pure Python function turns those facts
-into a score using fixed arithmetic. This keeps scores reproducible, auditable,
-and cheap to recompute when you tune the weights.
+**Gap history is append-only by design.**
+`skill_gap_snapshots` is `INSERT`-only. Each run gets a UUID. If you want trend
+data, you cannot retrofit it — the append-only design is why it exists at all.
 
-**Extraction results are cached by description hash.**
-The same job description, re-fetched from a different source or on a later run,
-hits the cache and costs zero API calls. Re-scoring after changing your skills or
-weights is free.
+**`--dry-run` is the preview tool.**
+Read state, print the plan, exit. No side effects. The correct habit before
+running `--force` on a production DB.
 
-**Secrets load in one place.**
-`run_cycle.py` calls `load_dotenv()` before any other import. No other file reads
-`.env`. If a key is missing, the relevant source or provider skips itself with a
-log line rather than raising.
-
-**Gap history is append-only.**
-`skill_gap_snapshots` uses `INSERT` only — no `UPDATE`, no `DELETE`. Each run
-gets a UUID `run_id`. The trend view reads the earliest and latest run by
-`computed_at` and shows the real delta. There is no way to accidentally overwrite
-history, and retrofitting trend data after the fact is impossible — which is why
-the table was designed this way from the start.
-
-**Skill names are canonicalised by your rules, not the model's.**
-The alias map in `config.yaml` is the single source of truth for what two skill
-names mean the same thing. The model never merges names. You add aliases when you
-see collisions in the `--audit` output.
-
-**Gap ranking uses opportunity cost, not raw frequency.**
-`python -m edgedash.gaps --compare` shows both rankings side by side. A skill
-that appears in many listings but those listings score poorly ranks lower by cost
-than a skill that appears less often but blocks your best opportunities. When the
-two columns diverge, cost is the actionable signal.
-
-**The LLM may suggest aliases but never applies them.**
-`--suggest-aliases` sends unaliased canonical strings to the model and asks for
-groupings. The model returns structured proposals with a confidence level. The
-tool prints ready-to-paste YAML and flags anything that contradicts your existing
-map. Nothing is written. You decide what gets added.
-
-**503 and 429 errors are both handled without crashing.**
-Transient server overload (503) backs off and retries up to 3 times. Per-minute
-rate limits (429) honour the `retry-after` delay from the API response. Daily
-quota exhaustion (429 with `PerDay` / `FreeTier` in the error body) stops the
-batch immediately with a clear message rather than grinding through 3 back-off
-attempts per listing.
+**The model may suggest aliases but never applies them.**
+`--suggest-aliases` makes one call, prints ready-to-paste YAML, and exits. You
+own the alias map. The system never merges skill names without your explicit edit.

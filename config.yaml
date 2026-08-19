@@ -51,10 +51,24 @@ use_mock_fetcher: false
 # Supported providers: "gemini" (needs GEMINI_API_KEY in .env),
 #                      "ollama"  (local, no key required).
 llm_provider: "gemini"
-llm_model: "gemini-2.5-flash"
+llm_model: "gemini-3.5-flash"
 
 # Maximum listings scored per cycle (rule 21 — cost/rate-limit guard).
 llm_batch_size: 25
+
+# ---------------------------------------------------------------------------
+# Orchestration thresholds — used by the Orchestrator's planning logic.
+# ---------------------------------------------------------------------------
+
+# How many hours must pass since the last fetch before fetching again.
+fetch_interval_hours: 6
+
+# Hard limits passed to each agent as stop conditions (rule 29).
+# The agent never decides its own limits — the Orchestrator sets them.
+fetch_max_pages: 5
+fetch_max_listings: 200
+score_max_seconds: 300
+analyse_max_seconds: 60
 
 # ---------------------------------------------------------------------------
 # Skill alias map — THIS IS YOURS TO EDIT.

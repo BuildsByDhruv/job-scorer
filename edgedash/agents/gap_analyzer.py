@@ -17,14 +17,19 @@ Same raw frequency, different quality listings → different rank.
 from __future__ import annotations
 
 import statistics
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import edgedash.storage as storage
 from edgedash.agents.base import AgentResult
 from edgedash.config import Config
 from edgedash.skills import canonical
+
+if TYPE_CHECKING:
+    from edgedash.planning import StopConditions
 
 # How many gaps to surface in the report and snapshot.
 _TOP_N = 10
@@ -144,10 +149,28 @@ def compute_gaps(
 class GapAnalyzer:
     name: str = "gap_analyzer"
 
-    def run(self, config: Config, db_path: str) -> AgentResult:
+    def run(
+        self,
+        config: Config,
+        db_path: str,
+        stop_conditions: "StopConditions | None" = None,
+    ) -> AgentResult:
+        max_seconds = (
+            stop_conditions.max_seconds
+            if stop_conditions and stop_conditions.max_seconds is not None
+            else None
+        )
+        deadline = time.monotonic() + max_seconds if max_seconds else None
         started_at = datetime.now(timezone.utc).isoformat()
 
         listings = storage.get_scored_listings_with_cache(db_path)
+
+        # Respect wall-clock stop condition after the DB read (rule 29).
+        if deadline is not None and time.monotonic() >= deadline:
+            return AgentResult(
+                agent=self.name, status="ok", records_touched=0,
+                notes=f"max_seconds={max_seconds} reached before analysis could start",
+            )
 
         if not listings:
             storage.log_cycle(

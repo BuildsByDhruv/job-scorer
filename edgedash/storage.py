@@ -646,3 +646,30 @@ def get_snapshot_run_ids(path: str) -> list[dict[str, Any]]:
         ).fetchall()
 
     return [dict(r) for r in rows]
+
+
+def last_score_time(path: str) -> str | None:
+    """Return the finished_at of the most recent successful scorer run.
+
+    Uses cycle_log — a cheap single-row scan, no full table load.
+    Returns None if no scorer run has ever completed successfully.
+    """
+    with _connect(path) as conn:
+        row = conn.execute(
+            "SELECT MAX(finished_at) FROM cycle_log "
+            "WHERE agent = 'scorer' AND status = 'ok'"
+        ).fetchone()
+    return row[0]
+
+
+def last_gap_snapshot_time(path: str) -> str | None:
+    """Return the computed_at of the most recent gap snapshot row.
+
+    Uses a MAX scan on skill_gap_snapshots — one cheap index scan.
+    Returns None if no snapshot has ever been written.
+    """
+    with _connect(path) as conn:
+        row = conn.execute(
+            "SELECT MAX(computed_at) FROM skill_gap_snapshots"
+        ).fetchone()
+    return row[0]

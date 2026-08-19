@@ -7,12 +7,16 @@ A single dead source never kills the cycle.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import edgedash.storage as storage
 from edgedash.agents.base import AgentResult
 from edgedash.config import Config
 from edgedash.sources.base import SOURCES
 from edgedash.sources.http import SourceError
+
+if TYPE_CHECKING:
+    from edgedash.planning import StopConditions
 
 # Import all registered source modules so @register decorators run.
 import edgedash.sources.arbeitnow  # noqa: F401
@@ -22,11 +26,30 @@ import edgedash.sources.apify      # noqa: F401
 class Fetcher:
     name: str = "fetcher"
 
-    def run(self, config: Config, db_path: str) -> AgentResult:
+    def run(
+        self,
+        config: Config,
+        db_path: str,
+        stop_conditions: "StopConditions | None" = None,
+    ) -> AgentResult:
+        # Respect Orchestrator-supplied limits (rule 29); fall back to no cap.
+        max_listings = (
+            stop_conditions.max_items
+            if stop_conditions and stop_conditions.max_items is not None
+            else None
+        )
         source_summaries: list[str] = []
         total_new = 0
+        total_fetched = 0
 
         for source_name in config.sources:
+            # Stop early if the Orchestrator's listing cap is already reached.
+            if max_listings is not None and total_fetched >= max_listings:
+                source_summaries.append(
+                    f"{source_name}: skipped (max_listings={max_listings} reached)"
+                )
+                continue
+
             source_cls = SOURCES.get(source_name)
             if source_cls is None:
                 msg = f"unknown source '{source_name}' — not in registry"
@@ -48,10 +71,15 @@ class Fetcher:
                 source_summaries.append(f"{source_name}: FAILED ({reason})")
                 continue
 
-            # Translate normalised source rows → storage schema.
+            # Trim to cap if needed.
+            if max_listings is not None:
+                remaining = max_listings - total_fetched
+                rows = rows[:remaining]
+
             storage_rows = _to_storage_rows(rows)
             new_count = storage.upsert_listings(db_path, storage_rows)
             total_new += new_count
+            total_fetched += len(rows)
 
             finished_at = datetime.now(timezone.utc).isoformat()
             _log_source(db_path, source_name, "ok", new_count,

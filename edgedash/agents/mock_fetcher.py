@@ -6,9 +6,14 @@ deduplication can be demonstrated on a second run.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from edgedash.agents.base import Agent, AgentResult
 from edgedash.config import Config
 import edgedash.storage as storage
+
+if TYPE_CHECKING:
+    from edgedash.planning import StopConditions
 
 # ---------------------------------------------------------------------------
 # Listing catalogue
@@ -179,7 +184,12 @@ _ALL_LISTINGS: list[dict] = _STABLE + _VARIABLE
 class MockFetcher:
     name: str = "mock_fetcher"
 
-    def run(self, config: Config, db_path: str) -> AgentResult:
+    def run(
+        self,
+        config: Config,
+        db_path: str,
+        stop_conditions: "StopConditions | None" = None,
+    ) -> AgentResult:
         try:
             new_count = storage.upsert_listings(db_path, _ALL_LISTINGS)
             return AgentResult(
