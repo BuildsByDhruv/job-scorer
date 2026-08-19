@@ -122,6 +122,8 @@ Nothing else changes.**
 Requires **Python 3.11+**.
 
 ```bash
+git clone https://github.com/BuildsByDhruv/job-scorer.git
+cd job-scorer
 pip install -r requirements.txt
 cp .env.example .env   # then add GEMINI_API_KEY and optionally APIFY_TOKEN
 ```
