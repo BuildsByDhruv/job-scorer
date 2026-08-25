@@ -35,10 +35,15 @@ class StopConditions:
     """Hard limits passed to an agent by the Orchestrator (rule 29).
 
     The agent never decides its own limits.
+
+    context_flags carries one-off retry instructions from the Orchestrator
+    (e.g. widen_distribution=True after a score_spread verification failure).
+    Agents are free to ignore flags they don't recognise.
     """
     max_items: int | None = None
     max_seconds: int | None = None
     max_pages: int | None = None
+    context_flags: dict[str, Any] = field(default_factory=dict)
 
     def render(self) -> str:
         parts = []
@@ -48,6 +53,9 @@ class StopConditions:
             parts.append(f"max_pages={self.max_pages}")
         if self.max_seconds is not None:
             parts.append(f"max_seconds={self.max_seconds}")
+        if self.context_flags:
+            flags = ", ".join(f"{k}={v}" for k, v in self.context_flags.items())
+            parts.append(f"flags=[{flags}]")
         return ", ".join(parts) if parts else "none"
 
 

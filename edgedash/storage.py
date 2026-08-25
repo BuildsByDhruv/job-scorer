@@ -673,3 +673,119 @@ def last_gap_snapshot_time(path: str) -> str | None:
             "SELECT MAX(computed_at) FROM skill_gap_snapshots"
         ).fetchone()
     return row[0]
+
+
+# ---------------------------------------------------------------------------
+# Verified-cycle query (rule 38)
+# ---------------------------------------------------------------------------
+
+
+def get_recent_cycle_logs(path: str, limit: int = 30) -> list[dict[str, Any]]:
+    """Return the most recent rows from cycle_log, newest first.
+
+    Used by the dashboard activity panel (rule 38 exception: this panel
+    intentionally shows ALL cycles including failed and degraded ones,
+    because the failures are the point of the panel).
+
+    Returns an empty list when cycle_log is empty.
+    """
+    with _connect(path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, agent, started_at, finished_at,
+                   records_touched, status, notes
+            FROM cycle_log
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_recent_orchestrator_cycles(
+    path: str,
+    limit: int = 20,
+    check_filter: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return the most recent orchestrator/cycle rows, newest first.
+
+    Each row is one complete cycle summary — the only rows that carry
+    verdict, retry count, agents-ran, and failed-check information.
+
+    Parameters
+    ----------
+    limit:
+        Maximum number of rows to return (applied after check_filter).
+    check_filter:
+        When given, only rows whose notes contain the string
+        '<check_filter> observed' are returned — i.e. cycles where that
+        specific check failed.  Purely a LIKE scan; no schema change.
+
+    Returns an empty list when no orchestrator cycles have run yet.
+    """
+    if check_filter:
+        # Match both:
+        # 1. New-style rows where the orchestrator embeds
+        #    "VERDICT: fail — <check> observed ..."
+        # 2. Older rows where the orchestrator row only has
+        #    "VERDICT: degraded" but a nearby verifier row
+        #    has the detail — caught via the verifier's own
+        #    cycle_log row sharing the same notes substring.
+        # We query both patterns with OR so one LIKE covers it.
+        pattern_obs    = f"%{check_filter} observed%"
+        pattern_fail   = f"%VERDICT: fail — {check_filter}%"
+        sql = """
+            SELECT id, agent, started_at, finished_at,
+                   records_touched, status, notes
+            FROM cycle_log
+            WHERE agent = 'orchestrator/cycle'
+              AND (notes LIKE ? OR notes LIKE ?)
+            ORDER BY id DESC
+            LIMIT ?
+        """
+        params: tuple = (pattern_obs, pattern_fail, limit)
+    else:
+        sql = """
+            SELECT id, agent, started_at, finished_at,
+                   records_touched, status, notes
+            FROM cycle_log
+            WHERE agent = 'orchestrator/cycle'
+            ORDER BY id DESC
+            LIMIT ?
+        """
+        params = (limit,)
+
+    with _connect(path) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_last_verified_cycle(path: str) -> dict[str, Any] | None:
+    """Return the most recent orchestrator cycle row that carries a passing verdict.
+
+    The dashboard calls this instead of reading the latest cycle blindly,
+    so stale-but-verified data is always preferred over fresh-but-unverified
+    data (rule 38).
+
+    A row qualifies when:
+      - agent = 'orchestrator/cycle'
+      - status IN ('complete', 'partial')   — not 'degraded', not 'nothing_to_do'
+      - notes LIKE '%VERDICT: pass%'        — the verifier confirmed the output
+
+    Returns None when no verified cycle exists yet.
+    """
+    with _connect(path) as conn:
+        row = conn.execute(
+            """
+            SELECT id, agent, started_at, finished_at,
+                   records_touched, status, notes
+            FROM cycle_log
+            WHERE agent  = 'orchestrator/cycle'
+              AND status IN ('complete', 'partial')
+              AND notes  LIKE '%VERDICT: pass%'
+            ORDER BY finished_at DESC
+            LIMIT 1
+            """,
+        ).fetchone()
+    return dict(row) if row is not None else None

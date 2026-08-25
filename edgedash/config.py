@@ -43,6 +43,13 @@ _DEFAULTS: dict[str, Any] = {
     "fetch_max_listings": 200,
     "score_max_seconds": 300,
     "analyse_max_seconds": 60,
+    # Verification thresholds (rule 39)
+    "min_score_spread": 10,
+    "min_score_stdev": 5.0,
+    "max_empty_extraction_pct": 20.0,
+    "max_skills_per_listing": 20,
+    "min_gap_sample": 3,
+    "max_data_age_days": 3,
 }
 
 # ---------------------------------------------------------------------------
@@ -76,6 +83,13 @@ class Config:
     fetch_max_listings: int
     score_max_seconds: int
     analyse_max_seconds: int
+    # Verification thresholds (rule 39)
+    min_score_spread: int
+    min_score_stdev: float
+    max_empty_extraction_pct: float
+    max_skills_per_listing: int
+    min_gap_sample: int
+    max_data_age_days: int
 
 
 # ---------------------------------------------------------------------------
@@ -141,4 +155,11 @@ def load_config(config_path: Path | None = None) -> Config:
         fetch_max_listings=int(merged["fetch_max_listings"]),
         score_max_seconds=int(merged["score_max_seconds"]),
         analyse_max_seconds=int(merged["analyse_max_seconds"]),
+        # Verification thresholds (rule 39)
+        min_score_spread=int(merged["min_score_spread"]),
+        min_score_stdev=float(merged["min_score_stdev"]),
+        max_empty_extraction_pct=float(merged["max_empty_extraction_pct"]),
+        max_skills_per_listing=int(merged["max_skills_per_listing"]),
+        min_gap_sample=int(merged["min_gap_sample"]),
+        max_data_age_days=int(merged["max_data_age_days"]),
     )

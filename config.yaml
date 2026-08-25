@@ -122,6 +122,29 @@ skill_aliases:
   "javascript": "javascript"   # keep; normalises "JavaScript"
   "golang": "go"
 
+# ---------------------------------------------------------------------------
+# Verification thresholds (rule 39) — every threshold has a comment naming
+# the failure mode it is designed to catch.
+# ---------------------------------------------------------------------------
+
+# check_score_spread: catches score inflation where the model compresses all
+# scores into a narrow band (e.g. everything between 60-70).
+min_score_spread: 10    # max - min must be at least this; < 10 → suspect run
+min_score_stdev: 5.0    # population stdev must be at least this; < 5 → too clustered
+
+# check_extraction_sanity: catches a broken extractor (empty lists) and a
+# model that returned a sentence or full paragraph instead of a skill list.
+max_empty_extraction_pct: 20   # % of listings allowed to have empty required_skills
+max_skills_per_listing: 30     # a single listing with more skills than this → extractor fault
+
+# check_gap_sample_size: catches gap rankings built on too few data points
+# (a "gap" seen in 1 listing is a rumour, not a signal).
+min_gap_sample: 3   # top-ranked gap must come from at least this many listings
+
+# check_freshness: catches a stale database where the fetcher has not run
+# recently, so scores and gaps are computed on outdated listings.
+max_data_age_days: 3   # newest listing must be no older than this many days
+
 # Target seniority level for scoring.
 # One of: junior, mid, senior, lead
 target_seniority: "mid"

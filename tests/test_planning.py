@@ -59,6 +59,13 @@ def _cfg(**overrides) -> Config:
         fetch_max_listings=200,
         score_max_seconds=300,
         analyse_max_seconds=60,
+        # Verification thresholds (added when verification.py landed)
+        min_score_spread=10,
+        min_score_stdev=5.0,
+        max_empty_extraction_pct=20.0,
+        max_skills_per_listing=20,
+        min_gap_sample=3,
+        max_data_age_days=3,
     )
     base.update(overrides)
     return Config(**base)

@@ -48,6 +48,20 @@ class Scorer:
             else None
         )
 
+        # widen_distribution: set by the Orchestrator after a score_spread
+        # verification failure (rule 36).  Clears all existing scores so the
+        # full batch is re-scored from scratch, giving the distribution a
+        # chance to spread across the real range instead of the previously
+        # scored (possibly pre-filtered) cluster.
+        widen = bool(
+            (stop_conditions.context_flags if stop_conditions else {})
+            .get("widen_distribution", False)
+        )
+        if widen:
+            cleared = storage.clear_score_all(db_path)
+            print(f"  ↺  [scorer] widen_distribution=True — "
+                  f"cleared {cleared} existing score(s) for full rescore")
+
         batch = storage.get_unscored_listings(db_path, limit=batch_size)
 
         if not batch:
