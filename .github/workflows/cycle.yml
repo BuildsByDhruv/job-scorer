@@ -1,0 +1,109 @@
+# EdgeDash daily cycle — fetches listings, scores them, analyses gaps,
+# verifies output, and writes results to the hosted Postgres database.
+#
+# Schedule
+# --------
+#   06:00 IST  (India Standard Time, UTC+5:30)
+#   =  00:30 UTC
+#   cron: '30 0 * * *'
+#
+# Rule 49 — the scheduler never serves a page; the dashboard never runs a cycle.
+# Rule 51 — idempotent (--migrate is safe to repeat) and hard-timeout 10 min.
+
+name: Daily cycle
+
+on:
+  schedule:
+    - cron: '30 0 * * *'   # 00:30 UTC = 06:00 IST daily
+
+  workflow_dispatch:        # manual trigger from Actions tab or GitHub CLI
+
+# No workflow-level retry — rule 36 caps retries inside the cycle itself.
+# A workflow retry would multiply those attempts, violating the rule.
+
+jobs:
+  run-cycle:
+    name: Run EdgeDash cycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10     # hard stop per rule 51 — free-tier safe
+
+    # Secrets are injected as env vars here and ONLY here.
+    # They are never echoed, never printed by any step.
+    # GitHub masks secret values in logs automatically, but we also
+    # avoid any step that would cause them to appear (no env -p, no printenv).
+    env:
+      DATABASE_URL:    ${{ secrets.DATABASE_URL }}
+      GEMINI_API_KEY:  ${{ secrets.GEMINI_API_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Migrate database
+        # CREATE TABLE IF NOT EXISTS — safe to run on every cycle.
+        # If the DB is unreachable this step fails loudly (rule 6),
+        # which fails the job and triggers a GitHub notification.
+        run: python -m edgedash.storage --migrate
+
+      - name: Run cycle
+        run: python run_cycle.py
+
+      - name: Collect cycle log
+        # Always runs so we get the log even when the cycle step fails.
+        # 'cat' output goes to the Actions log — GitHub auto-redacts secrets.
+        if: always()
+        run: |
+          echo "=== cycle_log (last 30 rows) ==="
+          python - <<'EOF'
+          import os
+          from dotenv import load_dotenv
+          load_dotenv()
+          import edgedash.storage as s
+          rows = s.get_recent_cycle_logs(os.environ.get("DATABASE_URL", "edgedash.db"), limit=30)
+          for r in rows:
+              # Never print r['notes'] raw — it may contain config values.
+              # Print only the structured fields.
+              print(f"  {r.get('finished_at','')[:19]}  {r['agent']:<30}  {r['status']:<10}  rows={r['records_touched']}")
+          EOF
+
+      - name: Export cycle log to file
+        if: always()
+        run: |
+          python - <<'EOF'
+          import os
+          from dotenv import load_dotenv
+          load_dotenv()
+          import edgedash.storage as s
+          rows = s.get_recent_cycle_logs(os.environ.get("DATABASE_URL", "edgedash.db"), limit=30)
+          with open("cycle_log_export.txt", "w") as f:
+              f.write("agent,started_at,finished_at,status,records_touched\n")
+              for r in rows:
+                  f.write(
+                      f"{r['agent']},"
+                      f"{r.get('started_at','')[:19]},"
+                      f"{r.get('finished_at','')[:19]},"
+                      f"{r['status']},"
+                      f"{r['records_touched']}\n"
+                  )
+          EOF
+
+      - name: Upload cycle log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cycle-log-${{ github.run_id }}
+          # Write the structured log to a file for the artifact.
+          # We use a Python script rather than shell redirection so no
+          # secret is passed through a shell variable expansion.
+          path: cycle_log_export.txt
+          if-no-files-found: ignore
+          retention-days: 14
