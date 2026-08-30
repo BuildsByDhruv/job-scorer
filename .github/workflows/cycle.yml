@@ -57,6 +57,13 @@ jobs:
       - name: Run cycle
         run: python run_cycle.py
 
+      - name: Health check
+        # Runs after the cycle so data is fresh.
+        # Exits non-zero if the system is unhealthy → job fails → GitHub notifies.
+        # Does NOT use if: always() so it is skipped when the cycle itself crashes
+        # (artifact collection below still runs via their own if: always()).
+        run: python -m edgedash.health
+
       - name: Collect cycle log
         # Always runs so we get the log even when the cycle step fails.
         if: always()

@@ -94,6 +94,8 @@ st.markdown("""
 .db-error-card { background: #1a0a0a; border: 1px solid #7f1d1d; border-radius: 10px; padding: 20px 24px; text-align: center; }
 .panel-error { background: #1a1a2e; border: 1px solid #374151; border-radius: 8px; padding: 12px 16px; font-size: .8rem; opacity: .7; }
 .footer { text-align: center; font-size: .72rem; opacity: .35; padding: 24px 0 8px; border-top: 1px solid #1f2937; margin-top: 32px; }
+.status-bar { display:flex; align-items:center; gap:8px; font-size:.72rem; opacity:.75; padding: 4px 0 8px; }
+.status-dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -175,6 +177,15 @@ def _top_gaps(limit: int = 10) -> list[dict]:
 @st.cache_data(ttl=_TTL, show_spinner=False)
 def _source_counts() -> list[dict]:
     return _safe(storage.count_by_source, [], DB)
+
+@st.cache_data(ttl=_TTL, show_spinner=False)
+def _health_status() -> tuple[str, str]:
+    """Return (colour, label) for the one-line status bar. Never raises."""
+    try:
+        from edgedash.health import dashboard_status
+        return dashboard_status(DB)
+    except Exception:
+        return "#374151", "health check unavailable"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -394,6 +405,19 @@ def _render_header() -> None:
             for s in sources
         )
         st.markdown(pills, unsafe_allow_html=True)
+
+    # ── One-line health status bar (rule 50: never crashes the page) ──────
+    try:
+        colour, label = _health_status()
+        st.markdown(
+            f'<div class="status-bar">'
+            f'<span class="status-dot" style="background:{colour}"></span>'
+            f'<span style="color:{colour}">{label}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    except Exception:
+        pass  # health bar is purely cosmetic — silently skip on any error
 
     st.divider()
 
