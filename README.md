@@ -19,7 +19,7 @@ You wake up to a ranked table, not a pile of unread postings.
 
 *Top scored listings with fit bars and clickable titles. Skill gap chart sorted by weighted opportunity cost.*
 
-Run the dashboard:
+Live dashboard (Streamlit Community Cloud):
 
 ```bash
 python -m streamlit run app.py
@@ -30,64 +30,74 @@ python -m streamlit run app.py
 ## What it actually does
 
 ```
-08:00  →  Fetcher pulls new listings from Arbeitnow / Apify
-           Stable-hash deduplication — same job never stored twice
+06:00 IST  →  GitHub Actions triggers the daily cycle
 
-08:01  →  Scorer extracts facts via LLM (one call per unique description)
-           then scores deterministically — no model touches the number
-           scored 25 · range 31-84 · mean 61 · spread OK
+             Fetcher pulls new listings from Arbeitnow / Apify
+             Stable-hash deduplication — same job never stored twice
 
-08:02  →  GapAnalyzer compares required skills to your profile
-           ranks gaps by Σ(fit_score/100) — a gap in an 85-score listing
-           outweighs a gap in a 20-score listing, even at equal frequency
-           writes one timestamped snapshot — previous snapshots never overwritten
+             Scorer extracts facts via LLM (one call per unique description)
+             then scores deterministically — no model touches the number
+             scored 25 · range 31-84 · mean 61 · spread OK
 
-08:02  →  Verifier runs deterministic checks on the output distribution
-           score_spread · extraction_sanity · gap_sample_size · freshness
-           On failure: retries the responsible agent once, then marks degraded
-           Dashboard only shows data from the last PASSING cycle
+             GapAnalyzer compares required skills to your profile
+             ranks gaps by Σ(fit_score/100) — a gap in an 85-score listing
+             outweighs a gap in a 20-score listing, even at equal frequency
+             writes one timestamped snapshot — previous snapshots never overwritten
+
+             Verifier runs deterministic checks on the output distribution
+             score_spread · extraction_sanity · gap_sample_size · freshness
+             On failure: retries the responsible agent once, then marks degraded
+             Dashboard only shows data from the last PASSING cycle
+
+             Health check reports system status — fails the job if stale
 ```
+
+Results land in hosted Postgres (Supabase). The Streamlit dashboard reads from
+there — a separate process that never runs a cycle.
 
 ---
 
 ## Architecture
 
 ```
-run_cycle.py
+GitHub Actions (cron 06:00 IST)
     │
-    ├─ state.py          read_state(config, now) → SystemState
-    │                    cheap MAX/COUNT queries, clock is a parameter
-    │
-    ├─ planning.py       build_plan(state, config) → Plan
-    │                    pure function, no I/O, skips are explicit
-    │
-    ├─ orchestrator.py   executes the plan, wraps each agent in try/except,
-    │                    writes exactly one summary row, marks cycle partial
-    │                    if any agent fails — never stops the cycle
-    │                         │
-    │                         ├── Fetcher       one source = one try/except
-    │                         ├── Scorer        LLM extract → deterministic score
-    │                         ├── GapAnalyzer   pure arithmetic, no model
-    │                         └── Verifier      distribution checks, no LLM
-    │
-    └─ storage.py        the ONLY file that touches sqlite3
+    └─ run_cycle.py
+         │
+         ├─ state.py          read_state(config, now) → SystemState
+         ├─ planning.py       build_plan(state, config) → Plan  (pure function)
+         │
+         └─ orchestrator.py   executes plan, one summary row per cycle
+                  │
+                  ├── Fetcher       one source = one try/except
+                  ├── Scorer        LLM extract → deterministic score
+                  ├── GapAnalyzer   pure arithmetic, no model
+                  └── Verifier      distribution checks, no LLM
+
+storage.py  ←──  the ONLY file that touches the database driver
+                 SQLite locally · Postgres in production (DATABASE_URL)
+
+app.py  ←──  Streamlit dashboard  (read-only, never runs a cycle)
+
+edgedash/health.py  ←──  health checks (db, freshness, recency, streak)
 ```
 
 **Adding a new agent: one registry entry + one decision block in `build_plan`. Nothing else changes.**
 
 ---
 
-## Current status
+## Module index
 
 | Module | What it does |
 |---|---|
-| `edgedash/config.py` | `Config` dataclass from `config.yaml`; `skill_aliases` map |
-| `edgedash/storage.py` | SQLite behind a thin interface; `skill_gap_snapshots` append-only |
-| `edgedash/state.py` | `read_state(config, now)` — `now` is a param, fully testable |
-| `edgedash/planning.py` | `build_plan(state, config)` pure function; explicit skip reasons |
+| `edgedash/config.py` | `Config` dataclass from `config.yaml`; skill alias map |
+| `edgedash/storage.py` | Dual SQLite/Postgres backend; the only file that imports a DB driver |
+| `edgedash/state.py` | `read_state(config, now)` — clock is a parameter, fully testable |
+| `edgedash/planning.py` | `build_plan(state, config)` pure function; skips are explicit |
 | `edgedash/orchestrator.py` | State-driven cycle; verification + retry; one summary row |
 | `edgedash/verification.py` | 4 deterministic checks; no LLM; thresholds in `config.yaml` |
-| `edgedash/agents/verifier.py` | Runs checks, returns verdict; writes no data |
+| `edgedash/health.py` | 4 health checks; CLI exits non-zero if unhealthy; dashboard status bar |
+| `edgedash/agents/verifier.py` | Runs verification checks; writes no data |
 | `edgedash/agents/fetcher.py` | Live fetcher; per-source isolation; respects `max_listings` |
 | `edgedash/agents/mock_fetcher.py` | Offline mock; `use_mock_fetcher: true` in config |
 | `edgedash/agents/scorer.py` | Batch scorer; quota-exhaustion stops immediately |
@@ -95,26 +105,56 @@ run_cycle.py
 | `edgedash/agents/gap_analyzer.py` | Deterministic gap ranking by opportunity cost |
 | `edgedash/sources/base.py` | `Source` protocol; `@register` decorator |
 | `edgedash/sources/http.py` | Shared HTTP helper: timeout, retries, rate-limit, User-Agent |
-| `edgedash/sources/arbeitnow.py` | Arbeitnow free board (no key) |
+| `edgedash/sources/arbeitnow.py` | Arbeitnow free board (no key needed) |
 | `edgedash/sources/apify.py` | Apify / Indeed scraper (`APIFY_TOKEN` in `.env`) |
 | `edgedash/llm.py` | Single LLM gateway; 503 retries; daily quota detected fast |
 | `edgedash/scoring.py` | Four-component deterministic scorer; model never touches the number |
 | `edgedash/skills.py` | `canonical()` pipeline; `--audit`; `--suggest-aliases` |
 | `edgedash/gaps.py` | `--compare` (freq vs cost); `--trend` (earliest → latest snapshot) |
 | `edgedash/verdicts.py` | Verification history CLI; `--check <name>` filter |
+| `edgedash/query/tools.py` | 7 parameterised read-only query tools; `@tool` registry |
+| `edgedash/query/ask.py` | Two-call NL pipeline: route → execute → phrase |
 | `edgedash/diagnose.py` | Read-only DB health check |
 | `edgedash/rescore.py` | Wipe scores without touching extraction cache |
-| `app.py` | Streamlit dashboard — read-only, verified-cycle data only |
+| `app.py` | Streamlit dashboard — read-only, verified-cycle data, health status bar |
 | `run_cycle.py` | Entry point: `--dry-run`, `--force`, `--explain` |
-| `tests/` | 111 tests — scorer, skills, planning, verification |
-
-### Week 4
-- [ ] Swap SQLite → hosted Postgres (one-file change in `storage.py`)
-- [ ] Deploy scheduled trigger (cron / cloud scheduler)
+| `.github/workflows/cycle.yml` | Daily cron + manual trigger; 10-min timeout; health check step |
+| `tests/` | 192 tests — scorer, skills, planning, verification, query tools |
 
 ---
 
-## Setup
+## Deployment
+
+### Environment variables
+
+| Variable | Where to set | Required |
+|---|---|---|
+| `DATABASE_URL` | Streamlit secrets · GitHub Actions secret | Yes |
+| `GEMINI_API_KEY` | Streamlit secrets · GitHub Actions secret | Yes |
+| `APIFY_TOKEN` | GitHub Actions secret (optional) | No |
+
+Streamlit Community Cloud: App → Settings → Secrets (TOML format):
+```toml
+DATABASE_URL  = "postgresql://user:pass@host:6543/postgres?pgbouncer=true"
+GEMINI_API_KEY = "..."
+```
+
+GitHub Actions: Settings → Secrets and variables → Actions → New repository secret.
+
+### Scheduled job
+
+`.github/workflows/cycle.yml` runs at **06:00 IST / 00:30 UTC** daily.
+Manual trigger: `gh workflow run cycle.yml`
+
+The job:
+1. Migrates the database (`--migrate` is idempotent)
+2. Runs the full cycle
+3. Runs `python -m edgedash.health` — fails the job if the system is unhealthy
+4. Exports the cycle log as a 14-day artifact
+
+---
+
+## Setup (local development)
 
 Requires **Python 3.11+**.
 
@@ -126,11 +166,12 @@ cp .env.example .env   # add GEMINI_API_KEY, optionally APIFY_TOKEN
 ```
 
 Edit `config.yaml` — role, city, skills, seniority, sources, alias map.
-Every user-specific value lives there. Nothing is hardcoded.
+Without `DATABASE_URL` set, the app falls back to local SQLite (`edgedash.db`).
 
 ```bash
-python run_cycle.py          # run a full cycle
-python -m streamlit run app.py   # open the dashboard
+python -m edgedash.storage --migrate   # create tables
+python run_cycle.py                    # run a full cycle
+python -m streamlit run app.py         # open the dashboard
 ```
 
 ---
@@ -154,6 +195,15 @@ python -m streamlit run app.py   # open the dashboard
 |---|---|
 | `python -m streamlit run app.py` | Open the live dashboard at `localhost:8501` |
 
+### Health and diagnostics
+
+| Command | What it does |
+|---|---|
+| `python -m edgedash.health` | Run all 4 health checks; exits 1 if any fail |
+| `python -m edgedash.storage --check` | Backend type, connectivity, row counts per table |
+| `python -m edgedash.storage --migrate` | Create / update all tables (idempotent) |
+| `python -m edgedash.diagnose` | Counts, duplicates, quality issues |
+
 ### Gap and verification intelligence
 
 | Command | What it does |
@@ -172,16 +222,15 @@ python -m streamlit run app.py   # open the dashboard
 | `python -m edgedash.skills --audit` | 40 most common raw strings + singletons |
 | `python -m edgedash.skills --suggest-aliases` | Model proposes aliases; writes nothing |
 
-### Diagnostics and maintenance
+### Maintenance
 
 | Command | What it does |
 |---|---|
-| `python -m edgedash.diagnose` | Counts, duplicates, quality issues |
 | `python -m edgedash.agents.scorer --limit 5` | Score N listings manually |
 | `python -m edgedash.rescore --id <id>` | Clear one listing's score |
-| `python -m edgedash.rescore --all` | Clear all scores (prompts for confirmation) |
+| `python -m edgedash.rescore --all` | Clear all scores (keeps extraction cache) |
 | `python -m edgedash.llm --check` | Verify LLM provider and model |
-| `python -m pytest tests/` | Run the full test suite (111 tests, ~0.9s) |
+| `python -m pytest tests/` | Run the full test suite (192 tests, ~9s) |
 
 ---
 
@@ -220,8 +269,7 @@ opportunity_cost(skill) = Σ (fit_score / 100)
 ```
 
 A listing scored 85 contributes 0.85. One scored 20 contributes 0.20. Two gaps
-at the same raw frequency rank differently if the listings behind them differ in
-quality. `--compare` shows both rankings side by side so you can see what moved and why.
+at the same raw frequency rank differently if the listings behind them differ in quality.
 
 ---
 
@@ -232,15 +280,31 @@ After every cycle the Verifier runs four deterministic checks — no LLM involve
 | Check | What it catches | Threshold (`config.yaml`) |
 |---|---|---|
 | `score_spread` | All scores in a narrow band — model inflation | `min_score_spread: 10`, `min_score_stdev: 5` |
-| `extraction_sanity` | Extractor broken (empty lists) or returned a sentence as skills | `max_empty_extraction_pct: 20`, `max_skills_per_listing: 30` |
-| `gap_sample_size` | Top-ranked gap computed from too few listings | `min_gap_sample: 3` |
-| `freshness` | Database is stale — fetcher hasn't run recently | `max_data_age_days: 3` |
+| `extraction_sanity` | Broken extractor or model returned a sentence as a skill list | `max_empty_extraction_pct: 20`, `max_skills_per_listing: 30` |
+| `gap_sample_size` | Top gap computed from too few listings — ranking a rumour | `min_gap_sample: 1` |
+| `freshness` | Database stale — fetcher hasn't run recently | `max_data_age_days: 3` |
 
-On a failed check the Orchestrator retries the responsible agent once with
-adjusted context (e.g. `widen_distribution=True` for a spread failure), then
-re-verifies. If it fails again the cycle is marked **degraded** and stops.
-The dashboard always shows data from the last **passing** cycle — stale verified
-data beats fresh unverified data.
+On failure: retry the responsible agent once with adjusted context, then re-verify.
+If it fails again: mark cycle **degraded**, stop. The dashboard always shows the
+last **passing** cycle — stale verified data beats fresh unverified data.
+
+---
+
+## How health reporting works
+
+`python -m edgedash.health` runs four read-only checks and exits non-zero if any fail:
+
+| Check | Fails when |
+|---|---|
+| `db_reachable` | Database cannot be queried |
+| `data_freshness` | Newest listing is older than 3 days |
+| `cycle_recency` | No successful cycle in the last 48 hours |
+| `verification_streak` | Last 3 cycles all failed verification |
+
+The GitHub Actions workflow runs this after every cycle. A failing health check
+fails the job and triggers a GitHub notification — no external monitoring service needed.
+
+The dashboard shows a one-line status bar (green / amber / red) at the top of every page.
 
 ---
 
@@ -255,62 +319,56 @@ otherwise                                        →  ○ SKIP  (this is a succe
 ```
 
 Every skip is explicit and logged with the state value that caused it.
-Use `--explain` to see the full breakdown. Use `--force <agent>` to override
-a skip; the override is recorded in the cycle summary row.
 
 ---
 
-## Skill canonicalisation
+## How the query pipeline works
 
-Raw strings from job listings go through a normalisation pipeline:
+The "Ask your data" panel in the dashboard runs a two-call pipeline:
 
-```
-"Kubernetes (EKS)"  →  lowercase  →  drop (qualifier)  →  strip punctuation
-                    →  collapse whitespace  →  alias lookup  →  "kubernetes"
-```
+1. **Route** — one LLM call picks a tool from a fixed registry of 7 parameterised
+   read-only functions. The model never sees SQL, table names, or column names.
+2. **Execute** — the tool runs with validated, clamped parameters. Model-supplied
+   values are untrusted input.
+3. **Phrase** — one LLM call turns the returned rows into 2–3 sentences using
+   only the numbers present in the data.
 
-The alias map in `config.yaml` is yours to own. The model never merges names.
-Run `--audit` to find collisions. Run `--suggest-aliases` to get model proposals —
-it prints YAML, writes nothing, and flags conflicts with your existing map.
-
----
-
-## LLM configuration
-
-```yaml
-llm_provider: "gemini"
-llm_model: "gemini-2.5-flash"
-llm_batch_size: 25
-```
-
-| Scenario | Behaviour |
-|---|---|
-| Daily quota hit | `LLMQuotaExhausted` stops the batch immediately |
-| 503 overload | Backs off and retries up to 3× before raising `LLMError` |
-| Per-minute 429 | Honours `retry-after` from the API response |
-| No API key | Set `llm_provider: "ollama"` and run locally |
+Every answer displays the raw rows alongside the prose. If no tool matches the
+question, a fixed message lists what can be asked — the model never guesses.
 
 ---
 
 ## Design decisions
 
 **Storage is isolated behind one module.**
-`edgedash/storage.py` is the only file permitted to import `sqlite3`. Moves to Postgres in week 4 with a single-file change.
+`edgedash/storage.py` is the only file permitted to import a database driver.
+Switching from SQLite to Postgres required changing exactly one file.
 
 **Listing IDs are stable hashes.**
-`SHA-256(source + url)` is the primary key. The same job re-fetched later hits `INSERT OR IGNORE` silently.
+`SHA-256(source + url)` is the primary key. The same job re-fetched later hits
+`INSERT OR IGNORE` / `ON CONFLICT DO NOTHING` silently.
 
 **The Orchestrator is state-driven, not sequence-driven.**
-`build_plan` is a pure function of `(state, config)`. Skips are explicit plan entries. One agent failing marks the cycle `partial` — the remaining agents still run.
+`build_plan` is a pure function of `(state, config)`. Skips are explicit plan
+entries with the state value that caused them.
 
 **Scoring is split: model extracts facts, Python scores them.**
-The model never sees weights and never produces a number. Scores are reproducible, auditable, and free to recompute when you tune the weights.
+The model never sees weights and never produces a number. Scores are reproducible,
+auditable, and free to recompute when you tune the weights.
 
 **Verification is deterministic and has no LLM.**
-A model cannot be the judge of a model's output. All thresholds live in `config.yaml` with comments naming the failure mode each one catches.
+A model cannot be the judge of a model's output. All thresholds live in `config.yaml`
+with comments naming the failure mode each one catches.
 
 **Gap history is append-only by design.**
-`skill_gap_snapshots` is `INSERT`-only. Each run gets a UUID. Trend data exists because it was never overwritten.
+`skill_gap_snapshots` is `INSERT`-only. Each run gets a UUID. Trend data exists
+because it was never overwritten.
 
 **The dashboard reads from the last passing cycle only.**
-Stale verified data always beats fresh unverified data. When the latest cycle fails, the dashboard shows a warning banner with both timestamps and continues showing the last known-good data.
+Stale verified data always beats fresh unverified data. When the latest cycle fails,
+the dashboard shows a warning banner with both timestamps.
+
+**The scheduler and dashboard are separate processes.**
+They share only the database. The dashboard never runs a cycle. The scheduler
+never serves a page. A hostile Streamlit startup (empty DB, unreachable DB,
+mid-migration) shows a clear status card instead of a stack trace.
