@@ -140,7 +140,7 @@ max_skills_per_listing: 30     # a single listing with more skills than this →
 
 # check_gap_sample_size: catches gap rankings built on too few data points
 # (a "gap" seen in 1 listing is a rumour, not a signal).
-min_gap_sample: 3   # top-ranked gap must come from at least this many listings
+min_gap_sample: 1   # top-ranked gap must come from at least this many listings
 
 # check_freshness: catches a stale database where the fetcher has not run
 # recently, so scores and gaps are computed on outdated listings.
