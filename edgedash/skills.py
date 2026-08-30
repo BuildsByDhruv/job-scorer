@@ -80,17 +80,12 @@ def _all_raw_skills(db_path: str) -> list[str]:
     Returns a flat list of raw strings (one entry per skill per cached row).
     Read-only — no writes.
     """
-    from edgedash.storage import _connect  # noqa: WPS450 — storage is the only DB module
+    import edgedash.storage as storage
 
     results: list[str] = []
-    with _connect(db_path) as conn:
-        rows = conn.execute(
-            "SELECT required_skills FROM extraction_cache"
-        ).fetchall()
-
-    for row in rows:
+    for raw in storage.get_all_required_skills(db_path):
         try:
-            skills = json.loads(row[0] or "[]")
+            skills = json.loads(raw or "[]")
         except json.JSONDecodeError:
             continue
         for s in skills:
@@ -216,17 +211,12 @@ def _collect_unaliased_canonicals(
     Strings that are already a key OR a value in the alias map are excluded —
     the user has already made a decision about those.
     """
-    from edgedash.storage import _connect
+    import edgedash.storage as storage
 
     results: list[str] = []
-    with _connect(db_path) as conn:
-        rows = conn.execute(
-            "SELECT required_skills FROM extraction_cache"
-        ).fetchall()
-
-    for row in rows:
+    for raw in storage.get_all_required_skills(db_path):
         try:
-            skills = json.loads(row[0] or "[]")
+            skills = json.loads(raw or "[]")
         except json.JSONDecodeError:
             continue
         for s in skills:

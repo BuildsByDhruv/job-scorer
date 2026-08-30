@@ -115,15 +115,7 @@ def read_state(config: Config, now: datetime) -> SystemState:
 
 def _last_cycle(db: str) -> tuple[str | None, str | None]:
     """Return (verdict, finished_at) for the most recent cycle_log row."""
-    import edgedash.storage as _s
-    from edgedash.storage import _connect
-
-    with _connect(db) as conn:
-        row = conn.execute(
-            "SELECT status, finished_at FROM cycle_log "
-            "ORDER BY finished_at DESC LIMIT 1"
-        ).fetchone()
-
+    row = storage.get_last_cycle_row(db)
     if row is None:
         return None, None
     return row["status"], row["finished_at"]

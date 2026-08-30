@@ -1,8 +1,13 @@
 """EdgeDash — agent activity dashboard.
 
-Read-only. Every data panel reads from the last PASSING cycle only (rule 38).
-The activity log is the deliberate exception — it shows all cycles including
-failures, because failures are the point of that panel.
+Read-only (rule 49). Every data panel reads from the last PASSING cycle only
+(rule 38, rule 50). The activity log is the deliberate exception.
+
+Hostile-startup rules (rule 50):
+  - DATABASE_URL missing → clear status card, no traceback.
+  - Tables empty         → "no cycles yet" message, not an exception.
+  - One panel crashing   → that panel shows an error card; others still render.
+  - No traceback is ever shown to a visitor.
 
 Run with:
     python -m streamlit run app.py
@@ -10,6 +15,8 @@ Run with:
 
 from __future__ import annotations
 
+import logging
+import os
 import textwrap
 from datetime import datetime, timezone
 
@@ -18,10 +25,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from edgedash.config import load_config
-import edgedash.storage as storage
-
-# ── Page config ─────────────────────────────────────────────────────────────
+# ── Page config — must be first Streamlit call ────────────────────────────────
 st.set_page_config(
     page_title="EdgeDash",
     page_icon="⚡",
@@ -29,136 +33,164 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ── Custom CSS ───────────────────────────────────────────────────────────────
+# ── Silence the backend-detection print in Streamlit context (rule 48) ────────
+# storage.py calls print() at module import time to log which backend is active.
+# That message goes to the server log (fine) but should not surface in the
+# Streamlit UI as a stray stdout fragment on some hosting environments.
+# We suppress it by redirecting stdout briefly during import.
+import io, sys as _sys
+_buf = io.StringIO()
+_sys.stdout = _buf
+try:
+    import edgedash.storage as storage
+    from edgedash.config import load_config
+finally:
+    _sys.stdout = _sys.__stdout__
+    _backend_log = _buf.getvalue().strip()
+    if _backend_log:
+        logging.getLogger("edgedash.storage").info(_backend_log)
+
+# ── Custom CSS ────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-/* Tighten default padding */
 .block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
-
-/* Metric label smaller */
 [data-testid="stMetricLabel"] { font-size: 0.75rem; opacity: 0.7; }
 [data-testid="stMetricValue"] { font-size: 1.4rem; font-weight: 700; }
-
-/* Section headers */
 .section-header {
-    font-size: 0.7rem;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    opacity: 0.5;
-    margin-bottom: 0.25rem;
-    margin-top: 0.5rem;
+    font-size: 0.7rem; font-weight: 700; letter-spacing: 0.12em;
+    text-transform: uppercase; opacity: 0.5;
+    margin-bottom: 0.25rem; margin-top: 0.5rem;
 }
-
-/* Verdict badge */
 .verdict-pass    { color: #4ade80; font-weight: 700; }
 .verdict-fail    { color: #f87171; font-weight: 700; }
 .verdict-degraded{ color: #f87171; font-weight: 700; }
 .verdict-partial { color: #fbbf24; font-weight: 700; }
-
-/* Cycle card */
-.cycle-card {
-    border-radius: 8px;
-    padding: 10px 14px;
-    margin-bottom: 6px;
-    border-left: 3px solid;
-}
+.cycle-card { border-radius: 8px; padding: 10px 14px; margin-bottom: 6px; border-left: 3px solid; }
 .cycle-pass     { background: #0d2218; border-color: #4ade80; }
 .cycle-fail     { background: #2a0d0d; border-color: #f87171; }
 .cycle-degraded { background: #2a0d0d; border-color: #ef4444; }
 .cycle-partial  { background: #221a08; border-color: #fbbf24; }
 .cycle-other    { background: #111827; border-color: #374151; }
-
 .cycle-card .cycle-time  { font-size: 0.72rem; opacity: 0.55; font-family: monospace; }
 .cycle-card .cycle-main  { display: flex; align-items: baseline; gap: 10px; margin: 2px 0; }
 .cycle-card .cycle-v     { font-size: 0.9rem; font-weight: 700; min-width: 72px; }
 .cycle-card .cycle-agents{ font-size: 0.82rem; opacity: 0.8; }
 .cycle-card .cycle-dur   { font-size: 0.72rem; opacity: 0.45; margin-left: auto; }
 .cycle-card .cycle-check { font-size: 0.75rem; opacity: 0.7; margin-top: 3px; font-family: monospace; }
-
-/* Score bar */
 .score-bar-wrap { width: 100%; background: #1f2937; border-radius: 4px; height: 6px; }
 .score-bar-fill { height: 6px; border-radius: 4px; }
-
-/* Skill gap row */
-.gap-row { display:flex; align-items:center; gap:8px; padding:6px 0;
-           border-bottom: 1px solid #1f2937; font-size:0.85rem; }
+.gap-row { display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom: 1px solid #1f2937; font-size:0.85rem; }
 .gap-skill{ min-width:130px; font-weight:600; }
 .gap-bar-wrap{ flex:1; background:#1f2937; border-radius:3px; height:8px; }
 .gap-bar-fill{ height:8px; border-radius:3px; background: #f87171; }
 .gap-cost { min-width:40px; text-align:right; font-size:0.75rem; opacity:0.6; }
 .gap-n    { min-width:28px; text-align:right; font-size:0.72rem; opacity:0.45; }
+.ask-box { background: #0d1117; border: 1px solid #30363d; border-radius: 12px; padding: 20px 24px 16px; margin-bottom: 8px; }
+.ask-title { font-size: 1.05rem; font-weight: 700; letter-spacing: .01em; margin-bottom: 2px; }
+.ask-sub { font-size: .75rem; opacity: .45; margin-bottom: 14px; }
+.answer-card { background: #0d2218; border: 1px solid #1a4731; border-radius: 10px; padding: 16px 20px; margin: 10px 0 6px; font-size: .95rem; line-height: 1.65; }
+.answer-card.unanswerable { background: #1a1a1a; border-color: #30363d; color: #8b949e; }
+.answer-meta { font-size: .7rem; opacity: .4; margin-top: 8px; display: flex; gap: 16px; }
+.db-error-card { background: #1a0a0a; border: 1px solid #7f1d1d; border-radius: 10px; padding: 20px 24px; text-align: center; }
+.panel-error { background: #1a1a2e; border: 1px solid #374151; border-radius: 8px; padding: 12px 16px; font-size: .8rem; opacity: .7; }
+.footer { text-align: center; font-size: .72rem; opacity: .35; padding: 24px 0 8px; border-top: 1px solid #1f2937; margin-top: 32px; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Config ───────────────────────────────────────────────────────────────────
+# ── Database / config init ─────────────────────────────────────────────────────
+# Never show a traceback. Capture every error and surface it as a status card.
+
+_DB_URL_PRESENT = bool(os.environ.get("DATABASE_URL"))
+_cfg_ok = False
+_db_ok  = False
+_cfg    = None
+DB      = "edgedash.db"
+_init_error: str | None = None
+
 try:
-    _cfg = load_config()
-    DB   = _cfg.db_path
-    storage.init_db(DB)
+    _cfg   = load_config()
+    DB     = _cfg.db_path
     _cfg_ok = True
-except Exception as _e:
-    _cfg_ok     = False
-    _cfg_err    = str(_e)
-    DB          = "edgedash.db"
+except Exception as exc:
+    logging.getLogger("edgedash.app").error("Config load failed: %s", exc)
+    _init_error = "Configuration file could not be loaded."
 
-_TTL = 30  # cache TTL seconds
+if _cfg_ok:
+    try:
+        storage.init_db(DB)
+        _db_ok = True
+    except Exception as exc:
+        logging.getLogger("edgedash.app").error("DB init failed: %s", exc)
+        _init_error = (
+            "Database is not reachable."
+            if _DB_URL_PRESENT
+            else "DATABASE_URL is not set — database not configured."
+        )
 
-# ── Cached data reads ─────────────────────────────────────────────────────────
+_TTL = 30  # seconds
+
+# ── Safe data-fetch wrappers ──────────────────────────────────────────────────
+# Each returns a safe default on any exception so one failing query
+# cannot take down the whole page (rule 50).
+
+def _safe(fn, default, *args, **kwargs):
+    """Call fn(*args, **kwargs); return default on any exception."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:
+        logging.getLogger("edgedash.app").warning(
+            "Data fetch failed (%s): %s", fn.__name__, exc
+        )
+        return default
+
 
 @st.cache_data(ttl=_TTL, show_spinner=False)
 def _verified_cycle() -> dict | None:
-    return storage.get_last_verified_cycle(DB)
+    return _safe(storage.get_last_verified_cycle, None, DB)
 
 @st.cache_data(ttl=_TTL, show_spinner=False)
 def _latest_orchestrator_cycle() -> dict | None:
-    rows = storage.get_recent_orchestrator_cycles(DB, limit=1)
+    rows = _safe(storage.get_recent_orchestrator_cycles, [], DB, limit=1)
     return rows[0] if rows else None
 
 @st.cache_data(ttl=_TTL, show_spinner=False)
 def _recent_cycles(limit: int = 20) -> list[dict]:
-    return storage.get_recent_orchestrator_cycles(DB, limit=limit)
+    return _safe(storage.get_recent_orchestrator_cycles, [], DB, limit=limit)
 
 @st.cache_data(ttl=_TTL, show_spinner=False)
 def _counts() -> tuple[int, int]:
-    total   = storage.count_total(DB)
-    unscored = storage.count_unscored(DB)
+    total    = _safe(storage.count_total,    0, DB)
+    unscored = _safe(storage.count_unscored, 0, DB)
     return total, unscored
 
 @st.cache_data(ttl=_TTL, show_spinner=False)
 def _top_listings(limit: int = 200) -> list[dict]:
-    return storage.get_listings(DB, limit=limit, min_score=0)
+    return _safe(storage.get_listings, [], DB, limit=limit, min_score=0)
 
 @st.cache_data(ttl=_TTL, show_spinner=False)
 def _top_gaps(limit: int = 10) -> list[dict]:
-    return storage.get_latest_gap_snapshot(DB)[:limit]
+    rows = _safe(storage.get_latest_gap_snapshot, [], DB)
+    return rows[:limit]
 
 @st.cache_data(ttl=_TTL, show_spinner=False)
 def _source_counts() -> list[dict]:
-    return storage.count_by_source(DB)
+    return _safe(storage.count_by_source, [], DB)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _fmt_ts(iso: str | None, short: bool = False, fallback: str = "—") -> str:
+def _fmt_ts(iso: str | None, fallback: str = "—") -> str:
     if not iso:
         return fallback
     try:
         dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        if short:
-            return dt.strftime("%-d %b %H:%M:%S UTC")   # "25 Aug 17:24:00 UTC"
         return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-    except (ValueError, AttributeError):
-        # %-d is Linux-only; fall back on Windows
-        try:
-            return dt.strftime("%d %b %H:%M:%S UTC").lstrip("0") if short else dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-        except Exception:
-            return iso
+    except Exception:
+        return iso
 
 
 def _fmt_ts_short(iso: str | None) -> str:
-    """E.g. '25 Aug 17:24:00'  — no UTC suffix for tight spaces."""
     if not iso:
         return "—"
     try:
@@ -179,7 +211,6 @@ def _parse_notes(notes: str | None) -> dict[str, str]:
         if ": " in seg:
             k, _, v = seg.partition(": ")
             out[k.strip().lower()] = v.strip()
-
     if "VERDICT: pass" in notes:
         out["verdict"] = "pass"
     elif "VERDICT: degraded" in notes:
@@ -197,11 +228,11 @@ def _parse_notes(notes: str | None) -> dict[str, str]:
 def _extract_check_names(notes: str, prefix: str) -> str:
     try:
         tail = notes.split(prefix, 1)[1].split(" | ")[0]
-        names = []
-        for seg in tail.split(";"):
-            seg = seg.strip()
-            if " observed" in seg:
-                names.append(seg.split(" observed")[0].strip())
+        names = [
+            seg.strip().split(" observed")[0].strip()
+            for seg in tail.split(";")
+            if " observed" in seg.strip()
+        ]
         return ", ".join(names) if names else tail[:60]
     except (IndexError, ValueError):
         return ""
@@ -209,23 +240,23 @@ def _extract_check_names(notes: str, prefix: str) -> str:
 
 def _verdict_css(verdict: str, status: str) -> str:
     v = verdict or status
-    if v == "pass":       return "cycle-pass"
-    if v == "degraded":   return "cycle-degraded"
-    if v in ("fail","failed"): return "cycle-fail"
-    if v == "partial":    return "cycle-partial"
+    if v == "pass":                  return "cycle-pass"
+    if v == "degraded":              return "cycle-degraded"
+    if v in ("fail", "failed"):      return "cycle-fail"
+    if v == "partial":               return "cycle-partial"
     return "cycle-other"
 
 
 def _verdict_label(verdict: str, status: str) -> str:
     v = verdict or status
     mapping = {
-        "pass":     '<span class="verdict-pass">✓ pass</span>',
-        "fail":     '<span class="verdict-fail">✗ fail</span>',
-        "failed":   '<span class="verdict-fail">✗ fail</span>',
-        "degraded": '<span class="verdict-degraded">⚡ degraded</span>',
-        "partial":  '<span class="verdict-partial">△ partial</span>',
-        "complete": '<span class="verdict-pass">✓ complete</span>',
-        "n/a":      '<span style="opacity:.4">– n/a</span>',
+        "pass":          '<span class="verdict-pass">✓ pass</span>',
+        "fail":          '<span class="verdict-fail">✗ fail</span>',
+        "failed":        '<span class="verdict-fail">✗ fail</span>',
+        "degraded":      '<span class="verdict-degraded">⚡ degraded</span>',
+        "partial":       '<span class="verdict-partial">△ partial</span>',
+        "complete":      '<span class="verdict-pass">✓ complete</span>',
+        "n/a":           '<span style="opacity:.4">– n/a</span>',
         "nothing_to_do": '<span style="opacity:.4">– idle</span>',
     }
     return mapping.get(v, f'<span style="opacity:.5">{v}</span>')
@@ -239,15 +270,61 @@ def _score_colour(score: int) -> str:
     return "#f87171"
 
 
+def _panel(fn, *args, **kwargs) -> None:
+    """Render a panel function; catch all exceptions and show a tidy error card.
+
+    A stranger must never see a traceback (rule 50). The real exception is
+    logged server-side only.
+    """
+    try:
+        fn(*args, **kwargs)
+    except Exception as exc:
+        logging.getLogger("edgedash.app").error(
+            "Panel %s failed: %s", fn.__name__, exc, exc_info=True
+        )
+        st.markdown(
+            f'<div class="panel-error">⚠ This panel could not load. '
+            f'Check server logs for details.</div>',
+            unsafe_allow_html=True,
+        )
+
+
+# ── DB-not-ready guard ────────────────────────────────────────────────────────
+
+def _render_db_error() -> None:
+    """Full-page status card when the database is missing or unreachable."""
+    st.markdown("## ⚡ EdgeDash")
+    if not _DB_URL_PRESENT:
+        st.markdown(
+            '<div class="db-error-card">'
+            '<h3 style="color:#f87171;margin-bottom:8px">Database not configured</h3>'
+            '<p style="opacity:.7">Set the <code>DATABASE_URL</code> environment variable '
+            'to your Postgres connection string and redeploy.</p>'
+            '<p style="opacity:.5;font-size:.8rem;margin-top:12px">'
+            'In Streamlit Community Cloud: App settings → Secrets → add '
+            '<code>DATABASE_URL = "postgresql://..."</code></p>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div class="db-error-card">'
+            '<h3 style="color:#f87171;margin-bottom:8px">Database unreachable</h3>'
+            '<p style="opacity:.7">The database could not be reached at startup. '
+            'Check your connection string and database status.</p>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+
 # ── Section 1: Header ─────────────────────────────────────────────────────────
 
 def _render_header() -> None:
-    verified = _verified_cycle()
-    latest   = _latest_orchestrator_cycle()
+    verified       = _verified_cycle()
+    latest         = _latest_orchestrator_cycle()
     total, unscored = _counts()
-    scored   = total - unscored
+    scored          = total - unscored
 
-    # Title row
     col_title, col_meta = st.columns([3, 2])
     with col_title:
         st.markdown("## ⚡ EdgeDash")
@@ -255,32 +332,36 @@ def _render_header() -> None:
         if _cfg_ok:
             st.markdown(
                 f"<div style='text-align:right;opacity:.5;font-size:.75rem;padding-top:.6rem'>"
-                f"{_cfg.target_role} · {_cfg.target_city} · "
-                f"refreshes every {_TTL}s"
+                f"{_cfg.target_role} · {_cfg.target_city} · refreshes every {_TTL}s"
                 f"</div>",
                 unsafe_allow_html=True,
             )
 
-    # Stale-data warning
     latest_notes   = _parse_notes(latest["notes"] if latest else None)
     latest_verdict = latest_notes.get("verdict", latest["status"] if latest else "")
     is_fresh_pass  = latest_verdict == "pass"
 
     if not is_fresh_pass and verified and latest:
-        v_ts = _fmt_ts(verified.get("finished_at"))
-        l_ts = _fmt_ts(latest.get("finished_at"))
         st.warning(
-            f"Most recent cycle ({l_ts}) ended **{latest_verdict}**. "
-            f"Data below is from last verified cycle: **{v_ts}**",
+            f"Most recent cycle ({_fmt_ts(latest.get('finished_at'))}) ended "
+            f"**{latest_verdict}**. Data below is from last verified cycle: "
+            f"**{_fmt_ts(verified.get('finished_at'))}**",
             icon="⚠️",
         )
     elif not is_fresh_pass and not verified:
-        st.info("No verified cycle yet. Run `python run_cycle.py` to populate.", icon="ℹ️")
+        if total == 0:
+            st.info(
+                "No data yet. Run `python run_cycle.py` to fetch and score listings.",
+                icon="ℹ️",
+            )
+        else:
+            st.info(
+                f"{total:,} listings fetched, none scored yet. "
+                "Run another cycle to score them.",
+                icon="ℹ️",
+            )
 
-    # Metrics row
-    ref    = verified or latest
-    ref_ts = _fmt_ts(ref["finished_at"] if ref else None, fallback="Never")
-    # Shorten timestamp for metric — avoid truncation
+    ref          = verified or latest
     ref_ts_short = _fmt_ts_short(ref["finished_at"] if ref else None)
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -291,7 +372,7 @@ def _render_header() -> None:
     with c3:
         st.metric("Scored", f"{scored:,}")
     with c4:
-        pct = f"{100*scored//total}%" if total else "0%"
+        pct = f"{100 * scored // total}%" if total else "0%"
         st.metric("Coverage", pct)
     with c5:
         st.metric("Unscored", f"{unscored:,}")
@@ -305,7 +386,6 @@ def _render_header() -> None:
         else:
             st.metric("Verdict", f"⚠️  {latest_verdict}")
 
-    # Source breakdown — compact inline pills
     sources = _source_counts()
     if sources:
         pills = "  ".join(
@@ -318,15 +398,123 @@ def _render_header() -> None:
     st.divider()
 
 
-# ── Section 2: Activity log ───────────────────────────────────────────────────
+# ── Section 2: Ask your data ──────────────────────────────────────────────────
+
+_EXAMPLE_QUESTIONS = [
+    "What are my top 5 best-matching jobs right now?",
+    "Which skills should I learn to unblock the most listings?",
+    "Which companies are actively hiring this week?",
+]
+
+
+def _render_ask() -> None:
+    st.markdown(
+        '<div class="ask-box">'
+        '<div class="ask-title">⚡ Ask your data</div>'
+        '<div class="ask-sub">Routes to the right tool · phrases from your rows only · '
+        'no estimates, no outside knowledge.</div>',
+        unsafe_allow_html=True,
+    )
+
+    c1, c2, c3 = st.columns(3, gap="small")
+    pressed: str | None = None
+    for col, q in zip([c1, c2, c3], _EXAMPLE_QUESTIONS):
+        with col:
+            if st.button(q, use_container_width=True, type="secondary",
+                         key=f"ex_{q[:20]}"):
+                pressed = q
+
+    question = st.text_input(
+        "question",
+        value=pressed or st.session_state.get("_ask_q", ""),
+        placeholder="Ask anything about your job data…",
+        label_visibility="collapsed",
+        key="_ask_input",
+    )
+    if pressed:
+        st.session_state["_ask_q"] = pressed
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    if not question or not question.strip():
+        return
+
+    if not _cfg_ok or not _db_ok:
+        st.markdown(
+            '<div class="answer-card unanswerable">'
+            'Database not available — queries cannot run.</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    with st.spinner(""):
+        try:
+            from edgedash.query.ask import ask as _ask
+            answer = _ask(
+                question=question.strip(),
+                config=_cfg,
+                db=DB,
+                aliases=_cfg.skill_aliases,
+            )
+        except Exception as exc:
+            # Log detail server-side; show a generic message to the visitor (rule 50)
+            logging.getLogger("edgedash.app").error("ask() failed: %s", exc, exc_info=True)
+            st.markdown(
+                '<div class="answer-card unanswerable">'
+                'Query pipeline unavailable. Check server logs.</div>',
+                unsafe_allow_html=True,
+            )
+            return
+
+    if answer.answerable:
+        parts = filter(None, [
+            f"tool: {answer.tool_used}" if answer.tool_used else "",
+            f"confidence: {answer.confidence}" if answer.confidence in ("high", "low") else "",
+            answer.summary or "",
+        ])
+        meta_html = (
+            f'<div class="answer-meta">{"  ·  ".join(parts)}</div>'
+        )
+        st.markdown(
+            f'<div class="answer-card">{answer.text}{meta_html}</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            f'<div class="answer-card unanswerable">{answer.text}</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    if answer.rows:
+        import pandas as pd
+        with st.expander(
+            f"Underlying data — {len(answer.rows)} row(s)", expanded=True
+        ):
+            df = pd.DataFrame(answer.rows)
+            st.dataframe(
+                df,
+                use_container_width=True,
+                height=min(42 * len(answer.rows) + 42, 380),
+                hide_index=True,
+            )
+
+
+# ── Section 3: Activity log ───────────────────────────────────────────────────
 
 def _render_activity_log() -> None:
-    st.markdown('<div class="section-header">Agent activity log</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-header">Agent activity log</div>',
+        unsafe_allow_html=True,
+    )
 
     cycles = _recent_cycles(20)
 
     if not cycles:
-        st.info("No cycles yet. Run `python run_cycle.py`.", icon="ℹ️")
+        st.info(
+            "No cycles recorded yet. Run `python run_cycle.py` to start.",
+            icon="ℹ️",
+        )
         return
 
     pass_count = 0
@@ -356,14 +544,12 @@ def _render_activity_log() -> None:
             f'padding:1px 6px;border-radius:10px;margin-left:6px">↺ {retries}</span>'
             if retries and retries != "0" else ""
         )
-        dur_html = f'<span class="cycle-dur">{dur}</span>' if dur else ""
         agents_html = (
-            f'<span class="cycle-agents">{agents}</span>' if agents and agents != "—" else ""
+            f'<span class="cycle-agents">{agents}</span>'
+            if agents and agents != "—" else ""
         )
-        checks_html = (
-            f'<div class="cycle-check">⚠ {checks}</div>' if checks else ""
-        )
-
+        dur_html    = f'<span class="cycle-dur">{dur}</span>' if dur else ""
+        checks_html = f'<div class="cycle-check">⚠ {checks}</div>' if checks else ""
         st.markdown(
             f'<div class="cycle-card {css}">'
             f'  <div class="cycle-time">{ts}</div>'
@@ -378,23 +564,25 @@ def _render_activity_log() -> None:
             unsafe_allow_html=True,
         )
 
-    # Summary bar
     total_cy = len(cycles)
     pct      = 100 * pass_count // total_cy if total_cy else 0
     top_fail = max(check_freq, key=check_freq.get) if check_freq else None
-
     summary_parts = [f"**{pass_count}/{total_cy}** passed ({pct}%)"]
     if top_fail:
-        summary_parts.append(f"most failing check: **{top_fail}** ({check_freq[top_fail]}×)")
+        summary_parts.append(
+            f"most failing check: **{top_fail}** ({check_freq[top_fail]}×)"
+        )
     st.caption("  ·  ".join(summary_parts))
-
     st.divider()
 
 
-# ── Section 3a: Top listings ──────────────────────────────────────────────────
+# ── Section 4a: Top listings ──────────────────────────────────────────────────
 
 def _render_top_listings() -> None:
-    st.markdown('<div class="section-header">Top scored listings</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-header">Top scored listings</div>',
+        unsafe_allow_html=True,
+    )
 
     all_l  = _top_listings()
     scored = sorted(
@@ -408,18 +596,12 @@ def _render_top_listings() -> None:
         return
 
     for r in scored:
-        score  = r["fit_score"]
-        colour = _score_colour(score)
-        reason = textwrap.shorten(r.get("fit_reason") or "", width=90, placeholder="…")
-        title  = r["title"]
-        co     = r["company"]
-        loc    = r.get("location") or ""
-        url    = r["url"]
-        bar_w  = score  # score is 0-100
-
+        score      = r["fit_score"]
+        colour     = _score_colour(score)
+        reason     = textwrap.shorten(r.get("fit_reason") or "", width=90, placeholder="…")
         reason_html = (
-            f'<div style="font-size:.75rem;opacity:.55;margin-top:3px;padding-left:46px">'
-            f'{reason}</div>'
+            f'<div style="font-size:.75rem;opacity:.55;margin-top:3px;'
+            f'padding-left:46px">{reason}</div>'
         ) if reason else ""
 
         st.markdown(
@@ -430,15 +612,15 @@ def _render_top_listings() -> None:
             f'    <div style="flex:1;min-width:0">'
             f'      <div style="font-weight:600;white-space:nowrap;overflow:hidden;'
             f'           text-overflow:ellipsis">'
-            f'        <a href="{url}" target="_blank" style="color:inherit;text-decoration:none">'
-            f'          {title}'
-            f'        </a>'
+            f'        <a href="{r["url"]}" target="_blank" '
+            f'           style="color:inherit;text-decoration:none">{r["title"]}</a>'
             f'      </div>'
-            f'      <div style="font-size:.78rem;opacity:.6">{co}'
-            f'        {(" · " + loc) if loc else ""}'
+            f'      <div style="font-size:.78rem;opacity:.6">{r["company"]}'
+            f'        {(" · " + r.get("location", "")) if r.get("location") else ""}'
             f'      </div>'
             f'      <div class="score-bar-wrap" style="margin-top:4px">'
-            f'        <div class="score-bar-fill" style="width:{bar_w}%;background:{colour}"></div>'
+            f'        <div class="score-bar-fill" '
+            f'             style="width:{score}%;background:{colour}"></div>'
             f'      </div>'
             f'    </div>'
             f'  </div>'
@@ -448,10 +630,13 @@ def _render_top_listings() -> None:
         )
 
 
-# ── Section 3b: Skill gaps ────────────────────────────────────────────────────
+# ── Section 4b: Skill gaps ────────────────────────────────────────────────────
 
 def _render_top_gaps() -> None:
-    st.markdown('<div class="section-header">Skill gaps</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-header">Skill gaps</div>',
+        unsafe_allow_html=True,
+    )
 
     gaps = _top_gaps(10)
 
@@ -476,7 +661,6 @@ def _render_top_gaps() -> None:
             '<span style="font-size:.65rem;opacity:.5;margin-left:4px">low conf</span>'
             if low_conf else ""
         )
-
         st.markdown(
             f'<div class="gap-row">'
             f'  <span class="gap-skill">{skill}{conf_tag}</span>'
@@ -492,13 +676,42 @@ def _render_top_gaps() -> None:
         )
 
 
+# ── Footer ────────────────────────────────────────────────────────────────────
+
+_GITHUB_REPO = "https://github.com/BuildsByDhruv/job-scorer"
+
+
+def _render_footer() -> None:
+    verified = _verified_cycle()
+    last_ts  = _fmt_ts(verified["finished_at"] if verified else None,
+                        fallback="no verified cycle yet")
+    st.markdown(
+        f'<div class="footer">'
+        f'Last successful cycle: {last_ts}'
+        f'  ·  '
+        f'<a href="{_GITHUB_REPO}" target="_blank" '
+        f'   style="color:inherit;opacity:.6">GitHub</a>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
 # ── Layout ────────────────────────────────────────────────────────────────────
 
-_render_header()
-_render_activity_log()
+# Hard gate: if the database is not configured or reachable, show the
+# status card and stop rendering. A stranger must never see a traceback.
+if not _db_ok:
+    _render_db_error()
+    st.stop()
+
+_panel(_render_header)
+_panel(_render_ask)
+_panel(_render_activity_log)
 
 col_l, col_r = st.columns([3, 2], gap="large")
 with col_l:
-    _render_top_listings()
+    _panel(_render_top_listings)
 with col_r:
-    _render_top_gaps()
+    _panel(_render_top_gaps)
+
+_render_footer()

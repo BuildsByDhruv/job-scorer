@@ -1,5 +1,6 @@
 # Runtime database — never commit
 edgedash.db
+*.db
 
 # Python
 __pycache__/
@@ -10,13 +11,24 @@ venv/
 *.egg-info/
 dist/
 build/
+.pytest_cache/
 
 # Environment / secrets
 .env
 .env.local
 .env.*.local
 
-# Editor
+# Streamlit secrets — must never be committed (rule 48)
+.streamlit/secrets.toml
+
+# IDE / OS
 .vscode/
 .idea/
+.kiro/
 *.swp
+.DS_Store
+Thumbs.db
+
+# Coverage
+.coverage
+htmlcov/

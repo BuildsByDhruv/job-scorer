@@ -1,5 +1,7 @@
-pyyaml
-requests
-python-dotenv
-google-genai
-streamlit
+PyYAML==6.0.3
+requests==2.34.2
+python-dotenv==1.2.2
+google-genai==2.18.1
+streamlit==1.62.0
+psycopg2-binary==2.9.12
+pandas==3.0.5

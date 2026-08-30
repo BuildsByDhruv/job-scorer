@@ -116,8 +116,56 @@ Trigger (scheduled)
 
 ---
 
+## Verification
+
+34. **The Verifier judges output plausibility and NEVER repairs, rewrites, or adjusts data.** It returns a verdict and a reason. The Orchestrator decides what to do about a failure.
+
+35. **Verification checks plausibility, never correctness.** There is no ground truth for a fit score. Checks assert properties of the output distribution and shape, not the accuracy of any single value.
+
+36. **A failed verification triggers at most ONE retry of the failing agent with adjusted context.** After that the cycle is marked "degraded" and stops. Never retry in an unbounded loop.
+
+37. **Every verdict is logged to `cycle_log` with the check that failed and the observed value that failed it** — never just "failed".
+
+38. **Only cycles with a passing verdict may be read by the dashboard.** A failed cycle must never overwrite the last known-good data. Stale verified data always beats fresh unverified data.
+
+39. **Verification thresholds live in `config.yaml`, not in code,** and every threshold has a comment saying what failure it is designed to catch.
+
+---
+
+## Natural Language Queries
+
+40. **NEVER generate SQL from a model.** No text-to-SQL, ever, in any form. The model selects from a fixed registry of parameterised query functions that I wrote. It never composes a query.
+
+41. **Every query tool is read-only, parameterised, and takes typed parameters that are validated and clamped to a safe range before execution.** A model-supplied parameter is untrusted input.
+
+42. **The model appears exactly twice per question: once to ROUTE (pick a tool and its parameters) and once to PHRASE (turn returned rows into prose).** It never touches the database in either call.
+
+43. **The phrasing call may use ONLY the numbers present in the rows it was given.** It must not estimate, extrapolate, add outside context, or infer a value that is not in the data. If the rows are empty it must say so plainly.
+
+44. **Every answer displays the underlying rows alongside it.** No prose answer appears without the data that produced it.
+
+45. **If no tool matches the question, say so and list what CAN be asked.** Never guess at the closest tool and never answer from general knowledge.
+
+46. **Query tools read from the last passing cycle only, per rule 38.**
+
+---
+
 ## Style
 
 - Small, testable functions over large monolithic ones.
 - Plain, readable Python over clever Python.
 - When asked to build one module, build that module only — do not scaffold the whole application.
+
+---
+
+## Deployment
+
+47. **Never rely on the local filesystem for anything that must survive a restart.** Hosting filesystems are ephemeral. All persistent state is in the hosted database.
+
+48. **Every secret comes from an environment variable read in one place.** No secret is ever committed, printed, logged, or shown in an error message or traceback.
+
+49. **The scheduled job and the dashboard are separate processes that share only the database.** The dashboard never runs a cycle; the scheduler never serves a page.
+
+50. **The deployed app must start and render even when the database is empty, unreachable, or mid-migration.** It shows a clear status message instead of a stack trace. A stranger must never see a traceback.
+
+51. **The scheduled job is idempotent and safe to run twice.** It must have a hard timeout and stay inside free-tier limits.

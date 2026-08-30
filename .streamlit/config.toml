@@ -1,0 +1,11 @@
+[server]
+headless = true          # required for cloud — no browser auto-open
+enableCORS = false       # Community Cloud handles this
+
+[theme]
+base = "dark"
+primaryColor        = "#4ade80"   # green — matches pass verdict colour
+backgroundColor     = "#0d1117"   # GitHub dark background
+secondaryBackgroundColor = "#161b22"
+textColor           = "#e6edf3"
+font                = "sans serif"

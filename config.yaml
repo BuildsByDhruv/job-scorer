@@ -2,33 +2,34 @@
 # All fields are optional; sensible defaults are applied for missing ones.
 
 # The job title you are targeting.
-target_role: "Security Engineer"
+target_role: "Software Engineer"
 
 # City used to filter job listings.
-target_city: "Berlin"
+target_city: "Remote"
 
 # Keywords that boost relevance when scoring a listing.
 keywords:
-  - "Security"
+  - "Java"
   - "SQL"
   - "Python"
-  - "Power BI"
-  - "Tableau"
-  - "ETL"
+  - "Cpp"
+  - "English"
+  - "DSA"
   - "data pipeline"
 
 # Your current skill set (used for gap analysis).
 my_skills:
-  - "Security"
+  - "Java"
   - "Python"
   - "SQL"
-  - "pandas"
+  - "Git"
   - "Excel"
-  - "data visualization"
-  - "statistical analysis"
+  - "TypeScript"
+  - "English"
+  - "Data Structure and Algorithm"
 
 # Years of relevant experience (used in fit scoring).
-experience_years: 3
+experience_years: 0
 
 # Path to the SQLite database file (relative to repo root).
 # In week 4 this becomes a Postgres connection string; change it here only.
@@ -41,7 +42,7 @@ min_fit_score: 50
 # Available: "arbeitnow" (no key needed), "apify" (needs APIFY_TOKEN in .env)
 sources:
   - "arbeitnow"
-  # - "apify"   # uncomment after adding APIFY_TOKEN to .env
+  - "apify"   # uncomment after adding APIFY_TOKEN to .env
 
 # Set to true to use the hardcoded mock fetcher instead of live sources.
 # Useful for offline development and testing.
