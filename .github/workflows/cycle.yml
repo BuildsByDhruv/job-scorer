@@ -59,20 +59,20 @@ jobs:
 
       - name: Collect cycle log
         # Always runs so we get the log even when the cycle step fails.
-        # 'cat' output goes to the Actions log — GitHub auto-redacts secrets.
         if: always()
         run: |
           echo "=== cycle_log (last 30 rows) ==="
           python - <<'EOF'
-          import os
-          from dotenv import load_dotenv
-          load_dotenv()
+          import os, sys
+          # load_dotenv() is intentionally omitted in CI — DATABASE_URL is
+          # already set by the env: block above and find_dotenv() crashes
+          # inside a python - heredoc (no caller frame).
           import edgedash.storage as s
-          rows = s.get_recent_cycle_logs(os.environ.get("DATABASE_URL", "edgedash.db"), limit=30)
+          db = os.environ.get("DATABASE_URL", "edgedash.db")
+          rows = s.get_recent_cycle_logs(db, limit=30)
           for r in rows:
-              # Never print r['notes'] raw — it may contain config values.
-              # Print only the structured fields.
-              print(f"  {r.get('finished_at','')[:19]}  {r['agent']:<30}  {r['status']:<10}  rows={r['records_touched']}")
+              # Never print r['notes'] — may contain config values.
+              print(f"  {str(r.get('finished_at',''))[:19]}  {r['agent']:<30}  {r['status']:<10}  rows={r['records_touched']}")
           EOF
 
       - name: Export cycle log to file
@@ -80,17 +80,16 @@ jobs:
         run: |
           python - <<'EOF'
           import os
-          from dotenv import load_dotenv
-          load_dotenv()
           import edgedash.storage as s
-          rows = s.get_recent_cycle_logs(os.environ.get("DATABASE_URL", "edgedash.db"), limit=30)
+          db = os.environ.get("DATABASE_URL", "edgedash.db")
+          rows = s.get_recent_cycle_logs(db, limit=30)
           with open("cycle_log_export.txt", "w") as f:
               f.write("agent,started_at,finished_at,status,records_touched\n")
               for r in rows:
                   f.write(
                       f"{r['agent']},"
-                      f"{r.get('started_at','')[:19]},"
-                      f"{r.get('finished_at','')[:19]},"
+                      f"{str(r.get('started_at',''))[:19]},"
+                      f"{str(r.get('finished_at',''))[:19]},"
                       f"{r['status']},"
                       f"{r['records_touched']}\n"
                   )
